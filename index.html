@@ -129,9 +129,6 @@
 </head>
 <body>
 <div class="wrap">
-  <h1>Transcribe audio, right in your browser</h1>
-  <p class="lede">Drop in a recording and get a transcript in <strong>English, German or Italian</strong>. Long recordings are <strong>sliced at natural pauses</strong> and transcribed piece by piece, with the text streaming in as each slice finishes. The Whisper speech model runs on your device, so <strong>your audio never leaves this page</strong> and there is nothing to sign up for.</p>
-
   <div class="grid">
     <section class="panel" aria-label="Audio input and settings">
       <h2>1. Add audio</h2>
@@ -176,6 +173,8 @@
         </select>
         <p class="hint">The model downloads once, the first time you transcribe, and is then cached in your browser. The sizes in the list are that one-time download: on a GPU, Tiny, Base and Small use a larger full-precision build, so they download more than on CPU.</p>
         <p class="hint" id="accelHint">Acceleration: detecting what this browser supports…</p>
+        <button class="btn" id="preloadBtn" type="button" style="margin-top:10px">Download this model now</button>
+        <p class="hint">Optional: fetch the model ahead of time, for example while you are on Wi-Fi, so your first transcription starts instantly.</p>
       </div>
 
       <div class="go-row">
@@ -350,6 +349,18 @@ async function ensurePipeline(modelId, preferWebGPU) {
 // dropped as soon as this handler returns, so memory stays flat.
 self.onmessage = async (event) => {
   const msg = event.data || {};
+  if (msg.type === 'preload') {
+    // Pre-download: load the pipeline, which fetches and caches every
+    // model file (with progress events), without transcribing anything,
+    // so a later transcription with this model starts instantly.
+    try {
+      await ensurePipeline(msg.modelId, msg.preferWebGPU);
+      self.postMessage({ type: 'preload-done' });
+    } catch (err) {
+      self.postMessage({ type: 'preload-error', message: (err && err.message) ? err.message : String(err) });
+    }
+    return;
+  }
   if (msg.type !== 'transcribe') return;
   const { sliceId, audio, language, modelId, preferWebGPU } = msg;
   try {
@@ -411,6 +422,8 @@ self.onmessage = async (event) => {
   var segList = document.getElementById('segList');
   var modelSel = document.getElementById('modelSel');
   var accelHint = document.getElementById('accelHint');
+  var preloadBtn = document.getElementById('preloadBtn');
+  var preloading = false;
   var recBtn = document.getElementById('recBtn');
   var recRow = document.getElementById('recRow');
   var recTime = document.getElementById('recTime');
@@ -754,6 +767,19 @@ self.onmessage = async (event) => {
             }
           }
         }
+      } else if (msg.type === 'preload-done') {
+        if (preloading) {
+          preloading = false;
+          preloadBtn.disabled = false;
+          setProgress(100);
+          setStatus('Model downloaded and cached in this browser. Transcriptions with it now start instantly.');
+        }
+      } else if (msg.type === 'preload-error') {
+        if (preloading) {
+          preloading = false;
+          preloadBtn.disabled = false;
+          setStatus('The model download failed: ' + (msg.message || 'unknown error'), true);
+        }
       } else if (msg.type === 'slice-result') {
         workerReady = true;
         if (pending && msg.sliceId === pending.sliceId) {
@@ -863,6 +889,7 @@ self.onmessage = async (event) => {
 
   function setControlsEnabled(enabled){
     modelSel.disabled = !enabled;
+    preloadBtn.disabled = !enabled;
     var pills = langPills.querySelectorAll('.pill');
     for (var i = 0; i < pills.length; i++) pills[i].disabled = !enabled;
   }
@@ -887,9 +914,19 @@ self.onmessage = async (event) => {
   }
   cancelBtn.addEventListener('click', function(){ if (busy) stopRun(); });
 
+  preloadBtn.addEventListener('click', function(){
+    if (busy || preloading) return;
+    preloading = true;
+    preloadBtn.disabled = true;
+    setProgress(0);
+    setStatus('Downloading the model (one time only)...');
+    getWorker().postMessage({ type: 'preload', modelId: modelSel.value, preferWebGPU: preferWebGPU && !forceCPU });
+  });
+
   goBtn.addEventListener('click', function(){
     if (!currentBlob || busy) return;
     busy = true;
+    preloading = false;
     cancelled = false;
     gotFirstResult = false;
     var myRun = ++runSeq;

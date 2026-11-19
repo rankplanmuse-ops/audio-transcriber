@@ -256,6 +256,8 @@
   var lastResult = null;
   var gotFirstResult = false;
   var preferWebGPU = false;
+  var forceCPU = false;    // latched once the GPU path fails: never ask again this session
+  var workerReady = false; // true once the current worker reports its model is loaded
 
   function fmtBytes(b){
     if (b < 1024) return b + ' B';
@@ -286,6 +288,7 @@
   // WebGPU detection, used for the hint text and as the worker's preference.
   if (navigator.gpu && navigator.gpu.requestAdapter) {
     navigator.gpu.requestAdapter().then(function(adapter){
+      if (forceCPU) { accelHint.textContent = 'Acceleration: CPU (WebAssembly).'; return; }
       preferWebGPU = !!adapter;
       accelHint.textContent = adapter
         ? 'Acceleration: WebGPU is available, so transcription runs on your GPU, several times faster than on CPU.'
@@ -481,7 +484,8 @@
 
   function getWorker(){
     if (worker) return worker;
-    worker = new Worker('data:application/javascript;base64,aW1wb3J0IHsgcGlwZWxpbmUsIGVudiB9IGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vQGh1Z2dpbmdmYWNlL3RyYW5zZm9ybWVyc0AzLjUuMS8rZXNtJzsKCmVudi5hbGxvd0xvY2FsTW9kZWxzID0gZmFsc2U7CmVudi51c2VCcm93c2VyQ2FjaGUgPSB0cnVlOwoKdmFyIExBTkdVQUdFUyA9IHsgZW46ICdlbmdsaXNoJywgZGU6ICdnZXJtYW4nLCBpdDogJ2l0YWxpYW4nIH07CgpsZXQgdHJhbnNjcmliZXIgPSBudWxsOwpsZXQgbG9hZGVkS2V5ID0gbnVsbDsKbGV0IGFjdGl2ZURldmljZSA9IG51bGw7CgovLyBQcmVjaXNpb24gcGVyIG1vZGVsIHBhcnQuIE9uIFdlYkdQVSB0aGUgcTggZGVjb2RlciBwcm9kdWNlcyBnYXJiYWdlIG91dHB1dAovLyAoYSBrbm93biB1cHN0cmVhbSBpc3N1ZSksIHNvIHRoZSBkZWNvZGVyIHJ1bnMgcTQgdGhlcmU7IHRoZSBlbmNvZGVyIHJ1bnMKLy8gZnAzMiBmb3IgdGhlIHNtYWxsIG1vZGVscyBhbmQgcTggZm9yIExhcmdlIHYzIFR1cmJvLCB3aG9zZSBmcDMyIGVuY29kZXIKLy8gYWxvbmUgd291bGQgYmUgYSBtdWx0aS1HQiBkb3dubG9hZC4gT24gQ1BVIChXQVNNKSBldmVyeXRoaW5nIHJ1bnMgcTguCmZ1bmN0aW9uIGR0eXBlRm9yKG1vZGVsSWQsIGRldmljZSkgewogIGlmIChkZXZpY2UgPT09ICd3ZWJncHUnKSB7CiAgICBpZiAobW9kZWxJZC5pbmRleE9mKCdsYXJnZS12My10dXJibycpICE9PSAtMSkgewogICAgICByZXR1cm4geyBlbmNvZGVyX21vZGVsOiAncTgnLCBkZWNvZGVyX21vZGVsX21lcmdlZDogJ3E0JyB9OwogICAgfQogICAgcmV0dXJuIHsgZW5jb2Rlcl9tb2RlbDogJ2ZwMzInLCBkZWNvZGVyX21vZGVsX21lcmdlZDogJ3E0JyB9OwogIH0KICByZXR1cm4gJ3E4JzsKfQoKYXN5bmMgZnVuY3Rpb24gd2ViZ3B1QXZhaWxhYmxlKCkgewogIHRyeSB7CiAgICBpZiAoIW5hdmlnYXRvci5ncHUpIHJldHVybiBmYWxzZTsKICAgIGNvbnN0IGFkYXB0ZXIgPSBhd2FpdCBuYXZpZ2F0b3IuZ3B1LnJlcXVlc3RBZGFwdGVyKCk7CiAgICByZXR1cm4gISFhZGFwdGVyOwogIH0gY2F0Y2ggKGUpIHsKICAgIHJldHVybiBmYWxzZTsKICB9Cn0KCmFzeW5jIGZ1bmN0aW9uIGxvYWRQaXBlbGluZShtb2RlbElkLCBkZXZpY2UpIHsKICBjb25zdCBrZXkgPSBtb2RlbElkICsgJ3wnICsgZGV2aWNlOwogIGlmICh0cmFuc2NyaWJlciAmJiBsb2FkZWRLZXkgPT09IGtleSkgcmV0dXJuIHRyYW5zY3JpYmVyOwogIGlmICh0cmFuc2NyaWJlcikgewogICAgdHJ5IHsgYXdhaXQgdHJhbnNjcmliZXIuZGlzcG9zZSgpOyB9IGNhdGNoIChlKSB7fQogICAgdHJhbnNjcmliZXIgPSBudWxsOwogIH0KICBsb2FkZWRLZXkgPSBrZXk7CiAgYWN0aXZlRGV2aWNlID0gZGV2aWNlOwogIHRyYW5zY3JpYmVyID0gYXdhaXQgcGlwZWxpbmUoJ2F1dG9tYXRpYy1zcGVlY2gtcmVjb2duaXRpb24nLCBtb2RlbElkLCB7CiAgICBkZXZpY2U6IGRldmljZSwKICAgIGR0eXBlOiBkdHlwZUZvcihtb2RlbElkLCBkZXZpY2UpLAogICAgcHJvZ3Jlc3NfY2FsbGJhY2s6IChkYXRhKSA9PiB7CiAgICAgIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAncHJvZ3Jlc3MnLCBkYXRhIH0pOwogICAgfSwKICB9KTsKICByZXR1cm4gdHJhbnNjcmliZXI7Cn0KCmFzeW5jIGZ1bmN0aW9uIGVuc3VyZVBpcGVsaW5lKG1vZGVsSWQsIHByZWZlcldlYkdQVSkgewogIGlmICh0cmFuc2NyaWJlciAmJiBsb2FkZWRLZXkgJiYgbG9hZGVkS2V5LmluZGV4T2YobW9kZWxJZCArICd8JykgPT09IDApIHJldHVybjsKICBzZWxmLnBvc3RNZXNzYWdlKHsgdHlwZTogJ3N0YXR1cycsIHN0YXR1czogJ2xvYWRpbmctbW9kZWwnIH0pOwogIGlmIChwcmVmZXJXZWJHUFUgJiYgKGF3YWl0IHdlYmdwdUF2YWlsYWJsZSgpKSkgewogICAgdHJ5IHsKICAgICAgYXdhaXQgbG9hZFBpcGVsaW5lKG1vZGVsSWQsICd3ZWJncHUnKTsKICAgICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdkZXZpY2UnLCBkZXZpY2U6ICd3ZWJncHUnIH0pOwogICAgICByZXR1cm47CiAgICB9IGNhdGNoIChlKSB7CiAgICAgIC8vIEdQVSBsb2FkIGZhaWxlZDogZmFsbCB0aHJvdWdoIHRvIHRoZSBDUFUgYnVpbGQuCiAgICB9CiAgfQogIGF3YWl0IGxvYWRQaXBlbGluZShtb2RlbElkLCAnd2FzbScpOwogIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnZGV2aWNlJywgZGV2aWNlOiAnd2FzbScgfSk7Cn0KCi8vIE9uZSBzbGljZSBhdCBhIHRpbWU6IHRoZSBtYWluIHRocmVhZCBzZW5kcyBhIHNsaWNlLCB3YWl0cyBmb3IgaXRzIHJlc3VsdCwKLy8gdGhlbiBzZW5kcyB0aGUgbmV4dC4gVGhlIHNsaWNlIGF1ZGlvIGFycml2ZXMgYXMgYSB0cmFuc2ZlcnJlZCBidWZmZXIgYW5kIGlzCi8vIGRyb3BwZWQgYXMgc29vbiBhcyB0aGlzIGhhbmRsZXIgcmV0dXJucywgc28gbWVtb3J5IHN0YXlzIGZsYXQuCnNlbGYub25tZXNzYWdlID0gYXN5bmMgKGV2ZW50KSA9PiB7CiAgY29uc3QgbXNnID0gZXZlbnQuZGF0YSB8fCB7fTsKICBpZiAobXNnLnR5cGUgIT09ICd0cmFuc2NyaWJlJykgcmV0dXJuOwogIGNvbnN0IHsgc2xpY2VJZCwgYXVkaW8sIGxhbmd1YWdlLCBtb2RlbElkLCBwcmVmZXJXZWJHUFUgfSA9IG1zZzsKICB0cnkgewogICAgYXdhaXQgZW5zdXJlUGlwZWxpbmUobW9kZWxJZCwgcHJlZmVyV2ViR1BVKTsKICAgIGNvbnN0IG9wdGlvbnMgPSB7CiAgICAgIGNodW5rX2xlbmd0aF9zOiAzMCwKICAgICAgc3RyaWRlX2xlbmd0aF9zOiA1LAogICAgICByZXR1cm5fdGltZXN0YW1wczogdHJ1ZSwKICAgICAgdGFzazogJ3RyYW5zY3JpYmUnLAogICAgfTsKICAgIGlmIChsYW5ndWFnZSAmJiBsYW5ndWFnZSAhPT0gJ2F1dG8nICYmIExBTkdVQUdFU1tsYW5ndWFnZV0pIHsKICAgICAgb3B0aW9ucy5sYW5ndWFnZSA9IExBTkdVQUdFU1tsYW5ndWFnZV07CiAgICB9CiAgICBzZWxmLnBvc3RNZXNzYWdlKHsgdHlwZTogJ3N0YXR1cycsIHN0YXR1czogJ3RyYW5zY3JpYmluZycgfSk7CiAgICBsZXQgcmVzdWx0OwogICAgdHJ5IHsKICAgICAgcmVzdWx0ID0gYXdhaXQgdHJhbnNjcmliZXIoYXVkaW8sIG9wdGlvbnMpOwogICAgfSBjYXRjaCAoZXJyKSB7CiAgICAgIGlmIChhY3RpdmVEZXZpY2UgPT09ICd3ZWJncHUnKSB7CiAgICAgICAgLy8gR1BVIHBhdGggZmFpbGVkIG1pZC1ydW46IHJlYnVpbGQgb24gQ1BVIGFuZCByZXRyeSB0aGlzIHNsaWNlIG9uY2UuCiAgICAgICAgYXdhaXQgbG9hZFBpcGVsaW5lKG1vZGVsSWQsICd3YXNtJyk7CiAgICAgICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdkZXZpY2UnLCBkZXZpY2U6ICd3YXNtJywgZmFsbGJhY2s6IHRydWUgfSk7CiAgICAgICAgcmVzdWx0ID0gYXdhaXQgdHJhbnNjcmliZXIoYXVkaW8sIG9wdGlvbnMpOwogICAgICB9IGVsc2UgewogICAgICAgIHRocm93IGVycjsKICAgICAgfQogICAgfQogICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzbGljZS1yZXN1bHQnLCBzbGljZUlkLCByZXN1bHQgfSk7CiAgfSBjYXRjaCAoZXJyKSB7CiAgICBzZWxmLnBvc3RNZXNzYWdlKHsKICAgICAgdHlwZTogJ3NsaWNlLWVycm9yJywKICAgICAgc2xpY2VJZCwKICAgICAgbWVzc2FnZTogKGVyciAmJiBlcnIubWVzc2FnZSkgPyBlcnIubWVzc2FnZSA6IFN0cmluZyhlcnIpLAogICAgfSk7CiAgfQp9Owo=', { type: 'module' });
+    workerReady = false;
+    worker = new Worker('data:application/javascript;base64,aW1wb3J0IHsgcGlwZWxpbmUsIGVudiB9IGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vQGh1Z2dpbmdmYWNlL3RyYW5zZm9ybWVyc0AzLjUuMS8rZXNtJzsKCmVudi5hbGxvd0xvY2FsTW9kZWxzID0gZmFsc2U7CmVudi51c2VCcm93c2VyQ2FjaGUgPSB0cnVlOwoKdmFyIExBTkdVQUdFUyA9IHsgZW46ICdlbmdsaXNoJywgZGU6ICdnZXJtYW4nLCBpdDogJ2l0YWxpYW4nIH07CgpsZXQgdHJhbnNjcmliZXIgPSBudWxsOwpsZXQgbG9hZGVkS2V5ID0gbnVsbDsKbGV0IGFjdGl2ZURldmljZSA9IG51bGw7CgovLyBQcmVjaXNpb24gcGVyIG1vZGVsIHBhcnQuIE9uIFdlYkdQVSB0aGUgcTggZGVjb2RlciBwcm9kdWNlcyBnYXJiYWdlIG91dHB1dAovLyAoYSBrbm93biB1cHN0cmVhbSBpc3N1ZSksIHNvIHRoZSBkZWNvZGVyIHJ1bnMgcTQgdGhlcmU7IHRoZSBlbmNvZGVyIHJ1bnMKLy8gZnAzMiBmb3IgdGhlIHNtYWxsIG1vZGVscyBhbmQgcTggZm9yIExhcmdlIHYzIFR1cmJvLCB3aG9zZSBmcDMyIGVuY29kZXIKLy8gYWxvbmUgd291bGQgYmUgYSBtdWx0aS1HQiBkb3dubG9hZC4gT24gQ1BVIChXQVNNKSBldmVyeXRoaW5nIHJ1bnMgcTguCmZ1bmN0aW9uIGR0eXBlRm9yKG1vZGVsSWQsIGRldmljZSkgewogIGlmIChkZXZpY2UgPT09ICd3ZWJncHUnKSB7CiAgICBpZiAobW9kZWxJZC5pbmRleE9mKCdsYXJnZS12My10dXJibycpICE9PSAtMSkgewogICAgICByZXR1cm4geyBlbmNvZGVyX21vZGVsOiAncTgnLCBkZWNvZGVyX21vZGVsX21lcmdlZDogJ3E0JyB9OwogICAgfQogICAgcmV0dXJuIHsgZW5jb2Rlcl9tb2RlbDogJ2ZwMzInLCBkZWNvZGVyX21vZGVsX21lcmdlZDogJ3E0JyB9OwogIH0KICByZXR1cm4gJ3E4JzsKfQoKYXN5bmMgZnVuY3Rpb24gd2ViZ3B1VXNhYmxlKCkgewogIHRyeSB7CiAgICBpZiAoIW5hdmlnYXRvci5ncHUgfHwgIW5hdmlnYXRvci5ncHUucmVxdWVzdEFkYXB0ZXIpIHJldHVybiBmYWxzZTsKICAgIGNvbnN0IGFkYXB0ZXIgPSBhd2FpdCBuYXZpZ2F0b3IuZ3B1LnJlcXVlc3RBZGFwdGVyKCk7CiAgICBpZiAoIWFkYXB0ZXIpIHJldHVybiBmYWxzZTsKICAgIC8vIEFuIGFkYXB0ZXIgYWxvbmUgaXMgbm90IGVub3VnaDogaW4gc29tZSBicm93c2VycyAoaW4tYXBwIHdlYnZpZXdzLAogICAgLy8gYmxvY2tsaXN0ZWQgb3IgdmlydHVhbCBHUFVzKSBjcmVhdGluZyBhIGRldmljZSBpcyB0aGUgc3RlcCB0aGF0CiAgICAvLyBhY3R1YWxseSBmYWlscywgc28gcHJvdmUgZGV2aWNlIGNyZWF0aW9uIHdvcmtzIGJlZm9yZSBjb21taXR0aW5nCiAgICAvLyB0byB0aGUgR1BVIHBhdGguIFRoZSB0ZXN0IGRldmljZSBpcyBkaXNjYXJkZWQ7IHRoZSBzcGVlY2ggbGlicmFyeQogICAgLy8gY3JlYXRlcyBpdHMgb3duIHdoZW4gaXQgbG9hZHMuCiAgICBpZiAodHlwZW9mIGFkYXB0ZXIucmVxdWVzdERldmljZSA9PT0gJ2Z1bmN0aW9uJykgewogICAgICB0cnkgewogICAgICAgIGNvbnN0IHRlc3REZXZpY2UgPSBhd2FpdCBhZGFwdGVyLnJlcXVlc3REZXZpY2UoKTsKICAgICAgICBpZiAoIXRlc3REZXZpY2UpIHJldHVybiBmYWxzZTsKICAgICAgICBpZiAodHlwZW9mIHRlc3REZXZpY2UuZGVzdHJveSA9PT0gJ2Z1bmN0aW9uJykgewogICAgICAgICAgdHJ5IHsgdGVzdERldmljZS5kZXN0cm95KCk7IH0gY2F0Y2ggKGUpIHt9CiAgICAgICAgfQogICAgICB9IGNhdGNoIChlKSB7CiAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgICB9CiAgICB9CiAgICByZXR1cm4gdHJ1ZTsKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZmFsc2U7CiAgfQp9Cgphc3luYyBmdW5jdGlvbiBsb2FkUGlwZWxpbmUobW9kZWxJZCwgZGV2aWNlKSB7CiAgY29uc3Qga2V5ID0gbW9kZWxJZCArICd8JyArIGRldmljZTsKICBpZiAodHJhbnNjcmliZXIgJiYgbG9hZGVkS2V5ID09PSBrZXkpIHJldHVybiB0cmFuc2NyaWJlcjsKICBpZiAodHJhbnNjcmliZXIpIHsKICAgIHRyeSB7IGF3YWl0IHRyYW5zY3JpYmVyLmRpc3Bvc2UoKTsgfSBjYXRjaCAoZSkge30KICAgIHRyYW5zY3JpYmVyID0gbnVsbDsKICAgIGxvYWRlZEtleSA9IG51bGw7CiAgICBhY3RpdmVEZXZpY2UgPSBudWxsOwogIH0KICAvLyBsb2FkZWRLZXkgYW5kIGFjdGl2ZURldmljZSBhcmUgb25seSBzZXQgb25jZSB0aGUgcGlwZWxpbmUgYWN0dWFsbHkKICAvLyBleGlzdHMsIHNvIGEgZmFpbGVkIGxvYWQgbmV2ZXIgbGVhdmVzIGEgaGFsZi1sb2FkZWQgcGlwZWxpbmUgbWFya2VkCiAgLy8gYXMgcmVhZHkgZm9yIHRoZSBuZXh0IHNsaWNlLgogIGNvbnN0IGNyZWF0ZWQgPSBhd2FpdCBwaXBlbGluZSgnYXV0b21hdGljLXNwZWVjaC1yZWNvZ25pdGlvbicsIG1vZGVsSWQsIHsKICAgIGRldmljZTogZGV2aWNlLAogICAgZHR5cGU6IGR0eXBlRm9yKG1vZGVsSWQsIGRldmljZSksCiAgICBwcm9ncmVzc19jYWxsYmFjazogKGRhdGEpID0+IHsKICAgICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdwcm9ncmVzcycsIGRhdGEgfSk7CiAgICB9LAogIH0pOwogIHRyYW5zY3JpYmVyID0gY3JlYXRlZDsKICBsb2FkZWRLZXkgPSBrZXk7CiAgYWN0aXZlRGV2aWNlID0gZGV2aWNlOwogIHJldHVybiB0cmFuc2NyaWJlcjsKfQoKYXN5bmMgZnVuY3Rpb24gZW5zdXJlUGlwZWxpbmUobW9kZWxJZCwgcHJlZmVyV2ViR1BVKSB7CiAgaWYgKHRyYW5zY3JpYmVyICYmIGxvYWRlZEtleSAmJiBsb2FkZWRLZXkuaW5kZXhPZihtb2RlbElkICsgJ3wnKSA9PT0gMCkgcmV0dXJuOwogIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnbG9hZGluZy1tb2RlbCcgfSk7CiAgbGV0IGdwdUVycm9yID0gbnVsbDsKICBpZiAocHJlZmVyV2ViR1BVICYmIChhd2FpdCB3ZWJncHVVc2FibGUoKSkpIHsKICAgIHRyeSB7CiAgICAgIGF3YWl0IGxvYWRQaXBlbGluZShtb2RlbElkLCAnd2ViZ3B1Jyk7CiAgICAgIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnZGV2aWNlJywgZGV2aWNlOiAnd2ViZ3B1JyB9KTsKICAgICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdtb2RlbC1yZWFkeScsIGRldmljZTogJ3dlYmdwdScgfSk7CiAgICAgIHJldHVybjsKICAgIH0gY2F0Y2ggKGUpIHsKICAgICAgLy8gR1BVIGxvYWQgZmFpbGVkOiBjbGVhciBhbnkgcGFydGlhbCBzdGF0ZSBhbmQgZmFsbCB0aHJvdWdoIHRvCiAgICAgIC8vIHRoZSBDUFUgYnVpbGQgaW5zdGVhZCBvZiBmYWlsaW5nIHRoZSBzbGljZS4KICAgICAgZ3B1RXJyb3IgPSBlOwogICAgICB0cmFuc2NyaWJlciA9IG51bGw7CiAgICAgIGxvYWRlZEtleSA9IG51bGw7CiAgICAgIGFjdGl2ZURldmljZSA9IG51bGw7CiAgICB9CiAgfQogIHRyeSB7CiAgICBhd2FpdCBsb2FkUGlwZWxpbmUobW9kZWxJZCwgJ3dhc20nKTsKICB9IGNhdGNoIChlKSB7CiAgICBpZiAoZ3B1RXJyb3IpIHsKICAgICAgdGhyb3cgbmV3IEVycm9yKCdHUFUgbG9hZCBmYWlsZWQgKCcgKyAoKGdwdUVycm9yICYmIGdwdUVycm9yLm1lc3NhZ2UpIHx8IGdwdUVycm9yKSArICcpOyBDUFUgbG9hZCBmYWlsZWQgKCcgKyAoKGUgJiYgZS5tZXNzYWdlKSB8fCBlKSArICcpJyk7CiAgICB9CiAgICB0aHJvdyBlOwogIH0KICAvLyBmYWxsYmFjayBpcyBzZXQgd2hlbmV2ZXIgR1BVIHdhcyByZXF1ZXN0ZWQgYnV0IHRoZSBydW4gbGFuZGVkIG9uIENQVSwKICAvLyBzbyB0aGUgcGFnZSBjYW4gc3RvcCBhc2tpbmcgZm9yIHRoZSBHUFUgcGF0aCBpbiB0aGlzIHNlc3Npb24uCiAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdkZXZpY2UnLCBkZXZpY2U6ICd3YXNtJywgZmFsbGJhY2s6ICEhKGdwdUVycm9yIHx8IHByZWZlcldlYkdQVSkgfSk7CiAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdtb2RlbC1yZWFkeScsIGRldmljZTogJ3dhc20nIH0pOwp9CgovLyBPbmUgc2xpY2UgYXQgYSB0aW1lOiB0aGUgbWFpbiB0aHJlYWQgc2VuZHMgYSBzbGljZSwgd2FpdHMgZm9yIGl0cyByZXN1bHQsCi8vIHRoZW4gc2VuZHMgdGhlIG5leHQuIFRoZSBzbGljZSBhdWRpbyBhcnJpdmVzIGFzIGEgdHJhbnNmZXJyZWQgYnVmZmVyIGFuZCBpcwovLyBkcm9wcGVkIGFzIHNvb24gYXMgdGhpcyBoYW5kbGVyIHJldHVybnMsIHNvIG1lbW9yeSBzdGF5cyBmbGF0LgpzZWxmLm9ubWVzc2FnZSA9IGFzeW5jIChldmVudCkgPT4gewogIGNvbnN0IG1zZyA9IGV2ZW50LmRhdGEgfHwge307CiAgaWYgKG1zZy50eXBlICE9PSAndHJhbnNjcmliZScpIHJldHVybjsKICBjb25zdCB7IHNsaWNlSWQsIGF1ZGlvLCBsYW5ndWFnZSwgbW9kZWxJZCwgcHJlZmVyV2ViR1BVIH0gPSBtc2c7CiAgdHJ5IHsKICAgIGF3YWl0IGVuc3VyZVBpcGVsaW5lKG1vZGVsSWQsIHByZWZlcldlYkdQVSk7CiAgICBjb25zdCBvcHRpb25zID0gewogICAgICBjaHVua19sZW5ndGhfczogMzAsCiAgICAgIHN0cmlkZV9sZW5ndGhfczogNSwKICAgICAgcmV0dXJuX3RpbWVzdGFtcHM6IHRydWUsCiAgICAgIHRhc2s6ICd0cmFuc2NyaWJlJywKICAgIH07CiAgICBpZiAobGFuZ3VhZ2UgJiYgbGFuZ3VhZ2UgIT09ICdhdXRvJyAmJiBMQU5HVUFHRVNbbGFuZ3VhZ2VdKSB7CiAgICAgIG9wdGlvbnMubGFuZ3VhZ2UgPSBMQU5HVUFHRVNbbGFuZ3VhZ2VdOwogICAgfQogICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICd0cmFuc2NyaWJpbmcnIH0pOwogICAgbGV0IHJlc3VsdDsKICAgIHRyeSB7CiAgICAgIHJlc3VsdCA9IGF3YWl0IHRyYW5zY3JpYmVyKGF1ZGlvLCBvcHRpb25zKTsKICAgIH0gY2F0Y2ggKGVycikgewogICAgICBpZiAoYWN0aXZlRGV2aWNlID09PSAnd2ViZ3B1JykgewogICAgICAgIC8vIEdQVSBwYXRoIGZhaWxlZCBtaWQtcnVuOiByZWJ1aWxkIG9uIENQVSBhbmQgcmV0cnkgdGhpcyBzbGljZSBvbmNlLgogICAgICAgIGF3YWl0IGxvYWRQaXBlbGluZShtb2RlbElkLCAnd2FzbScpOwogICAgICAgIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnZGV2aWNlJywgZGV2aWNlOiAnd2FzbScsIGZhbGxiYWNrOiB0cnVlIH0pOwogICAgICAgIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnbW9kZWwtcmVhZHknLCBkZXZpY2U6ICd3YXNtJyB9KTsKICAgICAgICByZXN1bHQgPSBhd2FpdCB0cmFuc2NyaWJlcihhdWRpbywgb3B0aW9ucyk7CiAgICAgIH0gZWxzZSB7CiAgICAgICAgdGhyb3cgZXJyOwogICAgICB9CiAgICB9CiAgICBzZWxmLnBvc3RNZXNzYWdlKHsgdHlwZTogJ3NsaWNlLXJlc3VsdCcsIHNsaWNlSWQsIHJlc3VsdCB9KTsKICB9IGNhdGNoIChlcnIpIHsKICAgIHNlbGYucG9zdE1lc3NhZ2UoewogICAgICB0eXBlOiAnc2xpY2UtZXJyb3InLAogICAgICBzbGljZUlkLAogICAgICBtZXNzYWdlOiAoZXJyICYmIGVyci5tZXNzYWdlKSA/IGVyci5tZXNzYWdlIDogU3RyaW5nKGVyciksCiAgICB9KTsKICB9Cn07Cg==', { type: 'module' });
     worker.onmessage = function(e){
       var msg = e.data || {};
       if (msg.type === 'progress') {
@@ -499,15 +503,24 @@
         if (msg.status === 'loading-model' && !gotFirstResult) {
           setStatus('Loading the speech model. The first run downloads it, later runs are instant.');
         }
-        if (msg.status === 'device') {
+        if (msg.status === 'device' || msg.status === 'model-ready') {
+          workerReady = true;
           if (msg.device === 'webgpu') {
             accelHint.textContent = 'Acceleration: WebGPU, running on your GPU.';
           } else {
             accelHint.textContent = 'Acceleration: CPU (WebAssembly).';
-            if (msg.fallback && busy) setStatus('The GPU path hit a problem, so this run continues on CPU from the same slice.');
+            if (msg.fallback) {
+              // The GPU path failed and the worker recovered on CPU: latch
+              // CPU-only mode so no later worker in this session retries
+              // the GPU path and fails the same way.
+              forceCPU = true;
+              preferWebGPU = false;
+              if (busy) setStatus('The GPU path hit a problem, so this run continues on CPU from the same slice.');
+            }
           }
         }
       } else if (msg.type === 'slice-result') {
+        workerReady = true;
         if (pending && msg.sliceId === pending.sliceId) {
           var p = pending; pending = null; p.resolve(msg.result);
         }
@@ -517,11 +530,24 @@
         }
       }
     };
-    worker.onerror = function(){
+    worker.onerror = function(e){
       // A crashed worker loses only the slice in flight; the next slice
       // spins up a fresh worker and reloads the model from the browser cache.
-      var p = pending; pending = null; worker = null;
-      if (p) p.reject(new Error('The transcription engine crashed'));
+      // If it died before its model was ready, the GPU path is the prime
+      // suspect: latch CPU-only mode so the replacement worker starts on
+      // CPU instead of crashing the same way on every slice.
+      var diedBeforeReady = !workerReady;
+      var p = pending; pending = null; worker = null; workerReady = false;
+      if (diedBeforeReady) {
+        forceCPU = true;
+        preferWebGPU = false;
+        accelHint.textContent = 'Acceleration: CPU (WebAssembly).';
+      }
+      if (p) {
+        var err = new Error((e && e.message) ? e.message : 'The transcription engine crashed');
+        err.beforeReady = diedBeforeReady;
+        p.reject(err);
+      }
     };
     return worker;
   }
@@ -532,7 +558,7 @@
       pending = { sliceId: sliceId, resolve: resolve, reject: reject };
       w.postMessage({
         type: 'transcribe', sliceId: sliceId, audio: audio,
-        language: language, modelId: modelSel.value, preferWebGPU: preferWebGPU
+        language: language, modelId: modelSel.value, preferWebGPU: preferWebGPU && !forceCPU
       }, [audio.buffer]);
     });
   }
@@ -593,6 +619,7 @@
     runSeq++;
     if (pending) { var p = pending; pending = null; p.reject(new Error('cancelled')); }
     if (worker) { worker.terminate(); worker = null; }
+    workerReady = false;
     endRunUI();
     if (fullText) setStatus('Stopped. Everything transcribed so far is kept above, ready to copy or download.');
     else setStatus('Stopped.');
@@ -635,7 +662,7 @@
       if (myRun !== runSeq) return;
       var slices = prep.slices;
       var totalSec = prep.store.length / SR;
-      var processed = 0, failures = 0;
+      var processed = 0, failures = 0, successes = 0;
       var t0 = Date.now();
       if (slices.length > 1) {
         setStatus('Split into ' + slices.length + ' slices at natural pauses. Starting…');
@@ -661,14 +688,40 @@
           setStatus('Transcribing slice ' + (idx + 1) + ' of ' + slices.length + ' · ' + fmtDur(processed) + ' of ' + fmtDur(totalSec) + ' done');
         }
         var attempts = 0;
+        var cpuRestartUsed = false;
         function attempt(){
           attempts++;
           sendSlice(idx, sliceSamples(prep.store, slice)).then(function(result){
             if (myRun !== runSeq) return;
+            successes++;
             appendResult(result, slice);
             afterSlice();
-          }).catch(function(){
+          }).catch(function(err){
             if (myRun !== runSeq || cancelled) return;
+            var errMsg = (err && err.message) ? err.message : 'Transcription failed';
+            if (successes === 0 && !workerReady && !cpuRestartUsed) {
+              // The engine died or failed before its model ever became
+              // ready, most likely on the GPU path. Do not count this as
+              // a failed slice: restart the slice on a fresh CPU worker.
+              cpuRestartUsed = true;
+              forceCPU = true;
+              preferWebGPU = false;
+              if (worker) { worker.terminate(); worker = null; }
+              workerReady = false;
+              accelHint.textContent = 'Acceleration: CPU (WebAssembly).';
+              setStatus('The speech engine stopped before the model was ready. Restarting this slice on the CPU…');
+              attempt();
+              return;
+            }
+            if (successes === 0 && !workerReady) {
+              // The engine cannot start on the CPU path either. Stop the
+              // run with the real error instead of grinding through every
+              // remaining slice and marking each one as failed.
+              endRunUI();
+              setProgress(0);
+              setStatus('The transcription engine could not start in this browser, on the GPU or the CPU path, so the run was stopped instead of failing every slice. Error: ' + errMsg, true);
+              return;
+            }
             if (attempts < 2) { attempt(); return; }
             failures++;
             addSegRow(slice.start, slice.end, '(this slice could not be transcribed)', true);

@@ -215,6 +215,180 @@
   </ul>
 </div>
 
+<!-- The transcription worker's source travels inside this page so the
+     worker can always be started from a Blob object URL (see getWorker
+     in the main script), in every build of this page, including the
+     single-file export. Keep this copy in step with
+     assets/transcribe-worker.js. -->
+<script type="text/plain" id="workerSource">
+import { pipeline, env } from 'https://cdn.jsdelivr.net/npm/@huggingface/transformers@3.5.1/+esm';
+
+env.allowLocalModels = false;
+// Cache Storage is not readable in every worker context: in a worker
+// without a usable origin (a data: URL worker, some sandboxed iframes),
+// merely reading self.caches throws a SecurityError, and transformers.js
+// reads it while loading the model, which kills engine start on both the
+// GPU and the CPU path. Probe it once, inside a try: when it is not
+// safely available, run with browser caching off so the model loads
+// straight from the network (and simply re-downloads next session)
+// instead of the engine dying before it starts.
+var browserCacheUsable = false;
+try {
+  browserCacheUsable = !!self.caches && typeof self.caches.open === 'function';
+} catch (e) {
+  browserCacheUsable = false;
+}
+env.useBrowserCache = browserCacheUsable;
+
+var LANGUAGES = { en: 'english', de: 'german', it: 'italian' };
+
+let transcriber = null;
+let loadedKey = null;
+let activeDevice = null;
+
+// Precision per model part. On WebGPU the q8 decoder produces garbage output
+// (a known upstream issue), so the decoder runs q4 there; the encoder runs
+// fp32 for the small models and q8 for Large v3 Turbo, whose fp32 encoder
+// alone would be a multi-GB download. On CPU (WASM) everything runs q8.
+function dtypeFor(modelId, device) {
+  if (device === 'webgpu') {
+    if (modelId.indexOf('large-v3-turbo') !== -1) {
+      return { encoder_model: 'q8', decoder_model_merged: 'q4' };
+    }
+    return { encoder_model: 'fp32', decoder_model_merged: 'q4' };
+  }
+  return 'q8';
+}
+
+async function webgpuUsable() {
+  try {
+    if (!navigator.gpu || !navigator.gpu.requestAdapter) return false;
+    const adapter = await navigator.gpu.requestAdapter();
+    if (!adapter) return false;
+    // An adapter alone is not enough: in some browsers (in-app webviews,
+    // blocklisted or virtual GPUs) creating a device is the step that
+    // actually fails, so prove device creation works before committing
+    // to the GPU path. The test device is discarded; the speech library
+    // creates its own when it loads.
+    if (typeof adapter.requestDevice === 'function') {
+      try {
+        const testDevice = await adapter.requestDevice();
+        if (!testDevice) return false;
+        if (typeof testDevice.destroy === 'function') {
+          try { testDevice.destroy(); } catch (e) {}
+        }
+      } catch (e) {
+        return false;
+      }
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+async function loadPipeline(modelId, device) {
+  const key = modelId + '|' + device;
+  if (transcriber && loadedKey === key) return transcriber;
+  if (transcriber) {
+    try { await transcriber.dispose(); } catch (e) {}
+    transcriber = null;
+    loadedKey = null;
+    activeDevice = null;
+  }
+  // loadedKey and activeDevice are only set once the pipeline actually
+  // exists, so a failed load never leaves a half-loaded pipeline marked
+  // as ready for the next slice.
+  const created = await pipeline('automatic-speech-recognition', modelId, {
+    device: device,
+    dtype: dtypeFor(modelId, device),
+    progress_callback: (data) => {
+      self.postMessage({ type: 'progress', data });
+    },
+  });
+  transcriber = created;
+  loadedKey = key;
+  activeDevice = device;
+  return transcriber;
+}
+
+async function ensurePipeline(modelId, preferWebGPU) {
+  if (transcriber && loadedKey && loadedKey.indexOf(modelId + '|') === 0) return;
+  self.postMessage({ type: 'status', status: 'loading-model' });
+  let gpuError = null;
+  if (preferWebGPU && (await webgpuUsable())) {
+    try {
+      await loadPipeline(modelId, 'webgpu');
+      self.postMessage({ type: 'status', status: 'device', device: 'webgpu' });
+      self.postMessage({ type: 'status', status: 'model-ready', device: 'webgpu' });
+      return;
+    } catch (e) {
+      // GPU load failed: clear any partial state and fall through to
+      // the CPU build instead of failing the slice.
+      gpuError = e;
+      transcriber = null;
+      loadedKey = null;
+      activeDevice = null;
+    }
+  }
+  try {
+    await loadPipeline(modelId, 'wasm');
+  } catch (e) {
+    if (gpuError) {
+      throw new Error('GPU load failed (' + ((gpuError && gpuError.message) || gpuError) + '); CPU load failed (' + ((e && e.message) || e) + ')');
+    }
+    throw e;
+  }
+  // fallback is set whenever GPU was requested but the run landed on CPU,
+  // so the page can stop asking for the GPU path in this session.
+  self.postMessage({ type: 'status', status: 'device', device: 'wasm', fallback: !!(gpuError || preferWebGPU) });
+  self.postMessage({ type: 'status', status: 'model-ready', device: 'wasm' });
+}
+
+// One slice at a time: the main thread sends a slice, waits for its result,
+// then sends the next. The slice audio arrives as a transferred buffer and is
+// dropped as soon as this handler returns, so memory stays flat.
+self.onmessage = async (event) => {
+  const msg = event.data || {};
+  if (msg.type !== 'transcribe') return;
+  const { sliceId, audio, language, modelId, preferWebGPU } = msg;
+  try {
+    await ensurePipeline(modelId, preferWebGPU);
+    const options = {
+      chunk_length_s: 30,
+      stride_length_s: 5,
+      return_timestamps: true,
+      task: 'transcribe',
+    };
+    if (language && language !== 'auto' && LANGUAGES[language]) {
+      options.language = LANGUAGES[language];
+    }
+    self.postMessage({ type: 'status', status: 'transcribing' });
+    let result;
+    try {
+      result = await transcriber(audio, options);
+    } catch (err) {
+      if (activeDevice === 'webgpu') {
+        // GPU path failed mid-run: rebuild on CPU and retry this slice once.
+        await loadPipeline(modelId, 'wasm');
+        self.postMessage({ type: 'status', status: 'device', device: 'wasm', fallback: true });
+        self.postMessage({ type: 'status', status: 'model-ready', device: 'wasm' });
+        result = await transcriber(audio, options);
+      } else {
+        throw err;
+      }
+    }
+    self.postMessage({ type: 'slice-result', sliceId, result });
+  } catch (err) {
+    self.postMessage({
+      type: 'slice-error',
+      sliceId,
+      message: (err && err.message) ? err.message : String(err),
+    });
+  }
+};
+</script>
+
 <script>
 (function(){
   "use strict";
@@ -246,6 +420,7 @@
   var currentName = 'recording';
   var language = 'en';
   var worker = null;
+  var workerUrl = null;
   var busy = false;
   var cancelled = false;
   var runSeq = 0;
@@ -485,7 +660,19 @@
   function getWorker(){
     if (worker) return worker;
     workerReady = false;
-    worker = new Worker('data:application/javascript;base64,aW1wb3J0IHsgcGlwZWxpbmUsIGVudiB9IGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vQGh1Z2dpbmdmYWNlL3RyYW5zZm9ybWVyc0AzLjUuMS8rZXNtJzsKCmVudi5hbGxvd0xvY2FsTW9kZWxzID0gZmFsc2U7CmVudi51c2VCcm93c2VyQ2FjaGUgPSB0cnVlOwoKdmFyIExBTkdVQUdFUyA9IHsgZW46ICdlbmdsaXNoJywgZGU6ICdnZXJtYW4nLCBpdDogJ2l0YWxpYW4nIH07CgpsZXQgdHJhbnNjcmliZXIgPSBudWxsOwpsZXQgbG9hZGVkS2V5ID0gbnVsbDsKbGV0IGFjdGl2ZURldmljZSA9IG51bGw7CgovLyBQcmVjaXNpb24gcGVyIG1vZGVsIHBhcnQuIE9uIFdlYkdQVSB0aGUgcTggZGVjb2RlciBwcm9kdWNlcyBnYXJiYWdlIG91dHB1dAovLyAoYSBrbm93biB1cHN0cmVhbSBpc3N1ZSksIHNvIHRoZSBkZWNvZGVyIHJ1bnMgcTQgdGhlcmU7IHRoZSBlbmNvZGVyIHJ1bnMKLy8gZnAzMiBmb3IgdGhlIHNtYWxsIG1vZGVscyBhbmQgcTggZm9yIExhcmdlIHYzIFR1cmJvLCB3aG9zZSBmcDMyIGVuY29kZXIKLy8gYWxvbmUgd291bGQgYmUgYSBtdWx0aS1HQiBkb3dubG9hZC4gT24gQ1BVIChXQVNNKSBldmVyeXRoaW5nIHJ1bnMgcTguCmZ1bmN0aW9uIGR0eXBlRm9yKG1vZGVsSWQsIGRldmljZSkgewogIGlmIChkZXZpY2UgPT09ICd3ZWJncHUnKSB7CiAgICBpZiAobW9kZWxJZC5pbmRleE9mKCdsYXJnZS12My10dXJibycpICE9PSAtMSkgewogICAgICByZXR1cm4geyBlbmNvZGVyX21vZGVsOiAncTgnLCBkZWNvZGVyX21vZGVsX21lcmdlZDogJ3E0JyB9OwogICAgfQogICAgcmV0dXJuIHsgZW5jb2Rlcl9tb2RlbDogJ2ZwMzInLCBkZWNvZGVyX21vZGVsX21lcmdlZDogJ3E0JyB9OwogIH0KICByZXR1cm4gJ3E4JzsKfQoKYXN5bmMgZnVuY3Rpb24gd2ViZ3B1VXNhYmxlKCkgewogIHRyeSB7CiAgICBpZiAoIW5hdmlnYXRvci5ncHUgfHwgIW5hdmlnYXRvci5ncHUucmVxdWVzdEFkYXB0ZXIpIHJldHVybiBmYWxzZTsKICAgIGNvbnN0IGFkYXB0ZXIgPSBhd2FpdCBuYXZpZ2F0b3IuZ3B1LnJlcXVlc3RBZGFwdGVyKCk7CiAgICBpZiAoIWFkYXB0ZXIpIHJldHVybiBmYWxzZTsKICAgIC8vIEFuIGFkYXB0ZXIgYWxvbmUgaXMgbm90IGVub3VnaDogaW4gc29tZSBicm93c2VycyAoaW4tYXBwIHdlYnZpZXdzLAogICAgLy8gYmxvY2tsaXN0ZWQgb3IgdmlydHVhbCBHUFVzKSBjcmVhdGluZyBhIGRldmljZSBpcyB0aGUgc3RlcCB0aGF0CiAgICAvLyBhY3R1YWxseSBmYWlscywgc28gcHJvdmUgZGV2aWNlIGNyZWF0aW9uIHdvcmtzIGJlZm9yZSBjb21taXR0aW5nCiAgICAvLyB0byB0aGUgR1BVIHBhdGguIFRoZSB0ZXN0IGRldmljZSBpcyBkaXNjYXJkZWQ7IHRoZSBzcGVlY2ggbGlicmFyeQogICAgLy8gY3JlYXRlcyBpdHMgb3duIHdoZW4gaXQgbG9hZHMuCiAgICBpZiAodHlwZW9mIGFkYXB0ZXIucmVxdWVzdERldmljZSA9PT0gJ2Z1bmN0aW9uJykgewogICAgICB0cnkgewogICAgICAgIGNvbnN0IHRlc3REZXZpY2UgPSBhd2FpdCBhZGFwdGVyLnJlcXVlc3REZXZpY2UoKTsKICAgICAgICBpZiAoIXRlc3REZXZpY2UpIHJldHVybiBmYWxzZTsKICAgICAgICBpZiAodHlwZW9mIHRlc3REZXZpY2UuZGVzdHJveSA9PT0gJ2Z1bmN0aW9uJykgewogICAgICAgICAgdHJ5IHsgdGVzdERldmljZS5kZXN0cm95KCk7IH0gY2F0Y2ggKGUpIHt9CiAgICAgICAgfQogICAgICB9IGNhdGNoIChlKSB7CiAgICAgICAgcmV0dXJuIGZhbHNlOwogICAgICB9CiAgICB9CiAgICByZXR1cm4gdHJ1ZTsKICB9IGNhdGNoIChlKSB7CiAgICByZXR1cm4gZmFsc2U7CiAgfQp9Cgphc3luYyBmdW5jdGlvbiBsb2FkUGlwZWxpbmUobW9kZWxJZCwgZGV2aWNlKSB7CiAgY29uc3Qga2V5ID0gbW9kZWxJZCArICd8JyArIGRldmljZTsKICBpZiAodHJhbnNjcmliZXIgJiYgbG9hZGVkS2V5ID09PSBrZXkpIHJldHVybiB0cmFuc2NyaWJlcjsKICBpZiAodHJhbnNjcmliZXIpIHsKICAgIHRyeSB7IGF3YWl0IHRyYW5zY3JpYmVyLmRpc3Bvc2UoKTsgfSBjYXRjaCAoZSkge30KICAgIHRyYW5zY3JpYmVyID0gbnVsbDsKICAgIGxvYWRlZEtleSA9IG51bGw7CiAgICBhY3RpdmVEZXZpY2UgPSBudWxsOwogIH0KICAvLyBsb2FkZWRLZXkgYW5kIGFjdGl2ZURldmljZSBhcmUgb25seSBzZXQgb25jZSB0aGUgcGlwZWxpbmUgYWN0dWFsbHkKICAvLyBleGlzdHMsIHNvIGEgZmFpbGVkIGxvYWQgbmV2ZXIgbGVhdmVzIGEgaGFsZi1sb2FkZWQgcGlwZWxpbmUgbWFya2VkCiAgLy8gYXMgcmVhZHkgZm9yIHRoZSBuZXh0IHNsaWNlLgogIGNvbnN0IGNyZWF0ZWQgPSBhd2FpdCBwaXBlbGluZSgnYXV0b21hdGljLXNwZWVjaC1yZWNvZ25pdGlvbicsIG1vZGVsSWQsIHsKICAgIGRldmljZTogZGV2aWNlLAogICAgZHR5cGU6IGR0eXBlRm9yKG1vZGVsSWQsIGRldmljZSksCiAgICBwcm9ncmVzc19jYWxsYmFjazogKGRhdGEpID0+IHsKICAgICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdwcm9ncmVzcycsIGRhdGEgfSk7CiAgICB9LAogIH0pOwogIHRyYW5zY3JpYmVyID0gY3JlYXRlZDsKICBsb2FkZWRLZXkgPSBrZXk7CiAgYWN0aXZlRGV2aWNlID0gZGV2aWNlOwogIHJldHVybiB0cmFuc2NyaWJlcjsKfQoKYXN5bmMgZnVuY3Rpb24gZW5zdXJlUGlwZWxpbmUobW9kZWxJZCwgcHJlZmVyV2ViR1BVKSB7CiAgaWYgKHRyYW5zY3JpYmVyICYmIGxvYWRlZEtleSAmJiBsb2FkZWRLZXkuaW5kZXhPZihtb2RlbElkICsgJ3wnKSA9PT0gMCkgcmV0dXJuOwogIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnbG9hZGluZy1tb2RlbCcgfSk7CiAgbGV0IGdwdUVycm9yID0gbnVsbDsKICBpZiAocHJlZmVyV2ViR1BVICYmIChhd2FpdCB3ZWJncHVVc2FibGUoKSkpIHsKICAgIHRyeSB7CiAgICAgIGF3YWl0IGxvYWRQaXBlbGluZShtb2RlbElkLCAnd2ViZ3B1Jyk7CiAgICAgIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnZGV2aWNlJywgZGV2aWNlOiAnd2ViZ3B1JyB9KTsKICAgICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdtb2RlbC1yZWFkeScsIGRldmljZTogJ3dlYmdwdScgfSk7CiAgICAgIHJldHVybjsKICAgIH0gY2F0Y2ggKGUpIHsKICAgICAgLy8gR1BVIGxvYWQgZmFpbGVkOiBjbGVhciBhbnkgcGFydGlhbCBzdGF0ZSBhbmQgZmFsbCB0aHJvdWdoIHRvCiAgICAgIC8vIHRoZSBDUFUgYnVpbGQgaW5zdGVhZCBvZiBmYWlsaW5nIHRoZSBzbGljZS4KICAgICAgZ3B1RXJyb3IgPSBlOwogICAgICB0cmFuc2NyaWJlciA9IG51bGw7CiAgICAgIGxvYWRlZEtleSA9IG51bGw7CiAgICAgIGFjdGl2ZURldmljZSA9IG51bGw7CiAgICB9CiAgfQogIHRyeSB7CiAgICBhd2FpdCBsb2FkUGlwZWxpbmUobW9kZWxJZCwgJ3dhc20nKTsKICB9IGNhdGNoIChlKSB7CiAgICBpZiAoZ3B1RXJyb3IpIHsKICAgICAgdGhyb3cgbmV3IEVycm9yKCdHUFUgbG9hZCBmYWlsZWQgKCcgKyAoKGdwdUVycm9yICYmIGdwdUVycm9yLm1lc3NhZ2UpIHx8IGdwdUVycm9yKSArICcpOyBDUFUgbG9hZCBmYWlsZWQgKCcgKyAoKGUgJiYgZS5tZXNzYWdlKSB8fCBlKSArICcpJyk7CiAgICB9CiAgICB0aHJvdyBlOwogIH0KICAvLyBmYWxsYmFjayBpcyBzZXQgd2hlbmV2ZXIgR1BVIHdhcyByZXF1ZXN0ZWQgYnV0IHRoZSBydW4gbGFuZGVkIG9uIENQVSwKICAvLyBzbyB0aGUgcGFnZSBjYW4gc3RvcCBhc2tpbmcgZm9yIHRoZSBHUFUgcGF0aCBpbiB0aGlzIHNlc3Npb24uCiAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdkZXZpY2UnLCBkZXZpY2U6ICd3YXNtJywgZmFsbGJhY2s6ICEhKGdwdUVycm9yIHx8IHByZWZlcldlYkdQVSkgfSk7CiAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdtb2RlbC1yZWFkeScsIGRldmljZTogJ3dhc20nIH0pOwp9CgovLyBPbmUgc2xpY2UgYXQgYSB0aW1lOiB0aGUgbWFpbiB0aHJlYWQgc2VuZHMgYSBzbGljZSwgd2FpdHMgZm9yIGl0cyByZXN1bHQsCi8vIHRoZW4gc2VuZHMgdGhlIG5leHQuIFRoZSBzbGljZSBhdWRpbyBhcnJpdmVzIGFzIGEgdHJhbnNmZXJyZWQgYnVmZmVyIGFuZCBpcwovLyBkcm9wcGVkIGFzIHNvb24gYXMgdGhpcyBoYW5kbGVyIHJldHVybnMsIHNvIG1lbW9yeSBzdGF5cyBmbGF0LgpzZWxmLm9ubWVzc2FnZSA9IGFzeW5jIChldmVudCkgPT4gewogIGNvbnN0IG1zZyA9IGV2ZW50LmRhdGEgfHwge307CiAgaWYgKG1zZy50eXBlICE9PSAndHJhbnNjcmliZScpIHJldHVybjsKICBjb25zdCB7IHNsaWNlSWQsIGF1ZGlvLCBsYW5ndWFnZSwgbW9kZWxJZCwgcHJlZmVyV2ViR1BVIH0gPSBtc2c7CiAgdHJ5IHsKICAgIGF3YWl0IGVuc3VyZVBpcGVsaW5lKG1vZGVsSWQsIHByZWZlcldlYkdQVSk7CiAgICBjb25zdCBvcHRpb25zID0gewogICAgICBjaHVua19sZW5ndGhfczogMzAsCiAgICAgIHN0cmlkZV9sZW5ndGhfczogNSwKICAgICAgcmV0dXJuX3RpbWVzdGFtcHM6IHRydWUsCiAgICAgIHRhc2s6ICd0cmFuc2NyaWJlJywKICAgIH07CiAgICBpZiAobGFuZ3VhZ2UgJiYgbGFuZ3VhZ2UgIT09ICdhdXRvJyAmJiBMQU5HVUFHRVNbbGFuZ3VhZ2VdKSB7CiAgICAgIG9wdGlvbnMubGFuZ3VhZ2UgPSBMQU5HVUFHRVNbbGFuZ3VhZ2VdOwogICAgfQogICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICd0cmFuc2NyaWJpbmcnIH0pOwogICAgbGV0IHJlc3VsdDsKICAgIHRyeSB7CiAgICAgIHJlc3VsdCA9IGF3YWl0IHRyYW5zY3JpYmVyKGF1ZGlvLCBvcHRpb25zKTsKICAgIH0gY2F0Y2ggKGVycikgewogICAgICBpZiAoYWN0aXZlRGV2aWNlID09PSAnd2ViZ3B1JykgewogICAgICAgIC8vIEdQVSBwYXRoIGZhaWxlZCBtaWQtcnVuOiByZWJ1aWxkIG9uIENQVSBhbmQgcmV0cnkgdGhpcyBzbGljZSBvbmNlLgogICAgICAgIGF3YWl0IGxvYWRQaXBlbGluZShtb2RlbElkLCAnd2FzbScpOwogICAgICAgIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnZGV2aWNlJywgZGV2aWNlOiAnd2FzbScsIGZhbGxiYWNrOiB0cnVlIH0pOwogICAgICAgIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnbW9kZWwtcmVhZHknLCBkZXZpY2U6ICd3YXNtJyB9KTsKICAgICAgICByZXN1bHQgPSBhd2FpdCB0cmFuc2NyaWJlcihhdWRpbywgb3B0aW9ucyk7CiAgICAgIH0gZWxzZSB7CiAgICAgICAgdGhyb3cgZXJyOwogICAgICB9CiAgICB9CiAgICBzZWxmLnBvc3RNZXNzYWdlKHsgdHlwZTogJ3NsaWNlLXJlc3VsdCcsIHNsaWNlSWQsIHJlc3VsdCB9KTsKICB9IGNhdGNoIChlcnIpIHsKICAgIHNlbGYucG9zdE1lc3NhZ2UoewogICAgICB0eXBlOiAnc2xpY2UtZXJyb3InLAogICAgICBzbGljZUlkLAogICAgICBtZXNzYWdlOiAoZXJyICYmIGVyci5tZXNzYWdlKSA/IGVyci5tZXNzYWdlIDogU3RyaW5nKGVyciksCiAgICB9KTsKICB9Cn07Cg==', { type: 'module' });
+    // The worker is always started from a Blob object URL built from the
+    // source embedded in this page, never from a file path or a data: URL.
+    // A data: URL worker (how the single-file export would otherwise
+    // inline the worker file) runs without the page's origin, so reading
+    // Cache Storage inside it throws and the speech engine dies before
+    // the model loads, on the GPU and CPU paths alike. A Blob URL worker
+    // shares the page's real origin, where Cache Storage works; and
+    // because the source is embedded, this holds in every build of the
+    // page, hosted or exported as one file.
+    if (workerUrl) { URL.revokeObjectURL(workerUrl); workerUrl = null; }
+    var workerSource = document.getElementById('workerSource').textContent;
+    workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
+    worker = new Worker(workerUrl, { type: 'module' });
     worker.onmessage = function(e){
       var msg = e.data || {};
       if (msg.type === 'progress') {

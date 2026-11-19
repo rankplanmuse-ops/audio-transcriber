@@ -169,12 +169,12 @@
       <div class="field">
         <label for="modelSel">3. Model</label>
         <select id="modelSel">
-          <option value="onnx-community/whisper-tiny">Tiny: fastest, good for clear speech (about 40 MB)</option>
-          <option value="onnx-community/whisper-base" selected>Base: balanced speed and accuracy (about 80 MB)</option>
-          <option value="onnx-community/whisper-small">Small: stronger for German and Italian (about 250 MB)</option>
-          <option value="onnx-community/whisper-large-v3-turbo">Large v3 Turbo: best accuracy, big download (about 940 MB)</option>
+          <option value="onnx-community/whisper-tiny">Tiny: fastest, good for clear speech (about 45 MB on CPU, 120 MB on GPU)</option>
+          <option value="onnx-community/whisper-base" selected>Base: balanced speed and accuracy (about 80 MB on CPU, 200 MB on GPU)</option>
+          <option value="onnx-community/whisper-small">Small: stronger for German and Italian (about 240 MB on CPU, 560 MB on GPU)</option>
+          <option value="onnx-community/whisper-large-v3-turbo">Large v3 Turbo: best accuracy, big download (about 940 MB on GPU, 1,040 MB on CPU)</option>
         </select>
-        <p class="hint">The model downloads once, the first time you transcribe, and is then cached in your browser. Download size varies a little between the GPU and CPU builds.</p>
+        <p class="hint">The model downloads once, the first time you transcribe, and is then cached in your browser. The sizes in the list are that one-time download: on a GPU, Tiny, Base and Small use a larger full-precision build, so they download more than on CPU.</p>
         <p class="hint" id="accelHint">Acceleration: detecting what this browser supports…</p>
       </div>
 
@@ -685,6 +685,7 @@ self.onmessage = async (event) => {
     var dlBarMax = 0;
     worker.onmessage = function(e){
       var msg = e.data || {};
+      if (pending && pending.kick && msg.type !== 'slice-result' && msg.type !== 'slice-error') pending.kick();
       if (msg.type === 'progress') {
         var d = msg.data || {};
         if (gotFirstResult) return;
@@ -762,7 +763,33 @@ self.onmessage = async (event) => {
   function sendSlice(sliceId, audio){
     return new Promise(function(resolve, reject){
       var w = getWorker();
-      pending = { sliceId: sliceId, resolve: resolve, reject: reject };
+      // Watchdog: if the browser kills the worker mid-slice, which phones
+      // do when a long file plus a large model exhausts memory, the worker
+      // never answers and without a timer the run hangs forever with no
+      // output and no error. Progress and status messages from the worker
+      // re-arm the timer, so a long model download or a slow slice is
+      // never cut off; only a truly silent worker is terminated, and the
+      // rejection routes into the normal recovery (CPU restart, retry,
+      // or mark the slice failed and continue with the rest).
+      var timer = null;
+      function arm(){
+        if (timer) clearTimeout(timer);
+        timer = setTimeout(function(){
+          if (pending && pending.sliceId === sliceId) {
+            pending = null;
+            if (worker) { worker.terminate(); worker = null; }
+            workerReady = false;
+            reject(new Error('The speech engine stopped responding and may have run out of memory.'));
+          }
+        }, 420000);
+      }
+      arm();
+      pending = {
+        sliceId: sliceId,
+        kick: arm,
+        resolve: function(r){ if (timer) clearTimeout(timer); resolve(r); },
+        reject: function(e){ if (timer) clearTimeout(timer); reject(e); }
+      };
       w.postMessage({
         type: 'transcribe', sliceId: sliceId, audio: audio,
         language: language, modelId: modelSel.value, preferWebGPU: preferWebGPU && !forceCPU
@@ -906,6 +933,14 @@ self.onmessage = async (event) => {
           }).catch(function(err){
             if (myRun !== runSeq || cancelled) return;
             var errMsg = (err && err.message) ? err.message : 'Transcription failed';
+            if (errMsg.indexOf('stopped responding') !== -1 && !forceCPU) {
+              // The worker was killed mid-run, most likely out of memory
+              // on the GPU path: continue the rest of the run on CPU
+              // instead of losing every remaining slice the same way.
+              forceCPU = true;
+              preferWebGPU = false;
+              accelHint.textContent = 'Acceleration: CPU (WebAssembly).';
+            }
             if (successes === 0 && !workerReady && !cpuRestartUsed) {
               // The engine died or failed before its model ever became
               // ready, most likely on the GPU path. Do not count this as

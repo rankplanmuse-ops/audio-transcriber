@@ -43,9 +43,14 @@
   .lede strong{color:var(--ink)}
   .grid{display:grid; grid-template-columns:1fr; gap:18px}
   @media (min-width:880px){ .grid{grid-template-columns:400px 1fr; align-items:start} }
+  /* Grid and flex children default to min-width:auto, which lets long
+     transcript text force a column wider than the page and pushes the
+     text off the right edge. min-width:0 lets the columns constrain
+     their content so the text wraps inside them instead. */
+  .grid>*{min-width:0}
   .panel{
     background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
-    padding:20px;
+    padding:20px; min-width:0;
   }
   .panel h2{font-size:15px; font-weight:600; margin:0 0 12px; letter-spacing:0.01em}
   .drop{
@@ -112,14 +117,15 @@
   .actions{display:none; gap:8px; flex-wrap:wrap}
   .actions.show{display:flex}
   .out{
-    white-space:pre-wrap; word-break:break-word; font-size:16.5px; line-height:1.7;
-    min-height:220px;
+    white-space:pre-wrap; word-break:break-word; overflow-wrap:anywhere; font-size:16.5px; line-height:1.7;
+    min-height:220px; min-width:0;
   }
   .out:empty::before{content:"Your transcript will appear here, slice by slice as each part finishes. Pick a file, choose the language, and hit Transcribe."; color:var(--ink-2)}
   .segments{margin-top:18px; border-top:1px solid var(--line); padding-top:14px; display:none}
   .segments.show{display:block}
   .segments h3{font-size:13.5px; font-weight:600; margin:0 0 10px}
   .seg{display:flex; gap:12px; padding:5px 0; font-size:14.5px; align-items:baseline}
+  .seg span{min-width:0; overflow-wrap:anywhere}
   .seg time{font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:12.5px; color:var(--accent); white-space:nowrap}
   .seg.gap span{color:var(--warn)}
   .notes{margin-top:18px; color:var(--ink-2); font-size:14px}

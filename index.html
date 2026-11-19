@@ -130,7 +130,7 @@
 <body>
 <div class="wrap">
   <h1>Transcribe audio, right in your browser</h1>
-  <p class="lede">Drop in a recording and get a transcript in <strong>English, German or Italian</strong>. Long recordings are <strong>sliced at natural pauses</strong> and transcribed piece by piece, with the text streaming in as each slice finishes, so even a two-hour file stays light on memory. The Whisper speech model runs on your device, so <strong>your audio never leaves this page</strong> and there is nothing to sign up for.</p>
+  <p class="lede">Drop in a recording and get a transcript in <strong>English, German or Italian</strong>. Long recordings are <strong>sliced at natural pauses</strong> and transcribed piece by piece, with the text streaming in as each slice finishes. The Whisper speech model runs on your device, so <strong>your audio never leaves this page</strong> and there is nothing to sign up for.</p>
 
   <div class="grid">
     <section class="panel" aria-label="Audio input and settings">
@@ -207,7 +207,7 @@
   </div>
 
   <ul class="notes">
-    <li>How long files work: the audio is cut at natural pauses into slices of about 30 seconds. Each slice is transcribed on its own and then released from memory, so a two-hour recording needs about as much memory as a one-minute clip.</li>
+    <li>How long files work: the audio is cut at natural pauses into slices of about 30 seconds, and each slice is transcribed on its own and then released from memory. Reading a recording in still takes memory up front, roughly in proportion to its length, so on a phone a file much over an hour is best split into parts first, or transcribed on a computer, where multi-hour files are fine.</li>
     <li>If the tab crashes or you stop a run halfway, everything transcribed so far stays on screen, ready to copy or download. Only the slice in progress is lost.</li>
     <li>WebGPU: in Chrome and Edge the model can run on your graphics card, several times faster than on the processor. Other browsers fall back to the CPU automatically, and if the GPU path ever fails mid-run, the job continues on CPU from the same slice.</li>
     <li>Large v3 Turbo is the most accurate model here and the best pick for German and Italian, but it is a big one-time download and slow on CPU alone. On a phone, start with Tiny or Base.</li>
@@ -556,17 +556,21 @@ self.onmessage = async (event) => {
     });
   });
 
-  // Decode to 16 kHz mono, stored as Int16 to halve the memory footprint.
-  // Per-slice float copies are made one at a time during transcription and
-  // then released, so peak memory stays flat however long the recording is.
-  function monoFloat(decoded){
-    var len = decoded.length, ch = decoded.numberOfChannels;
-    var outArr = new Float32Array(len);
-    for (var c = 0; c < ch; c++) {
-      var d = decoded.getChannelData(c);
-      for (var i = 0; i < len; i++) outArr[i] += d[i] / ch;
+  // Decode to 16 kHz mono, stored as Int16. The conversion writes
+  // straight into the Int16 store and never builds a full-length float
+  // copy of the recording: an earlier version held the decoded audio, a
+  // mono float copy and the store in memory at the same time, and on a
+  // phone, where decoding happens at the file's native sample rate (a
+  // two-hour stereo file decodes to gigabytes of float samples), that
+  // multiplied footprint got the tab killed by the operating system.
+  // Resampling is chunked for the same reason: each two-minute window is
+  // rendered, converted and released on its own.
+  function writeMono(store, outPos, data, count){
+    for (var i = 0; i < count; i++) {
+      var v = data[i];
+      if (v > 1) v = 1; else if (v < -1) v = -1;
+      store[outPos + i] = Math.round(v * 32767);
     }
-    return outArr;
   }
   function decodeToInt16(blob){
     return blob.arrayBuffer().then(function(buf){
@@ -577,24 +581,47 @@ self.onmessage = async (event) => {
         return closed.then(function(){ return decoded; });
       });
     }).then(function(decoded){
-      if (decoded.sampleRate === SR) return monoFloat(decoded);
-      var len = Math.ceil(decoded.duration * SR);
-      var offline = new OfflineAudioContext(1, len, SR);
-      var src = offline.createBufferSource();
-      src.buffer = decoded;
-      src.connect(offline.destination);
-      src.start(0);
-      return offline.startRendering().then(function(rendered){
-        return rendered.getChannelData(0).slice(0);
-      });
-    }).then(function(floatMono){
-      var store = new Int16Array(floatMono.length);
-      for (var i = 0; i < floatMono.length; i++) {
-        var v = floatMono[i];
-        if (v > 1) v = 1; else if (v < -1) v = -1;
-        store[i] = Math.round(v * 32767);
+      var totalOut = Math.round(decoded.duration * SR);
+      var store = new Int16Array(totalOut);
+      if (decoded.sampleRate === SR) {
+        // Already at 16 kHz: mix the channels down straight into the
+        // store, one channel pass at a time, no intermediate copy.
+        var ch = decoded.numberOfChannels;
+        var n = Math.min(decoded.length, totalOut);
+        var scale = 1 / ch;
+        for (var c = 0; c < ch; c++) {
+          var d = decoded.getChannelData(c);
+          for (var i = 0; i < n; i++) {
+            var acc = (c === 0 ? 0 : store[i] / 32767) + d[i] * scale;
+            if (acc > 1) acc = 1; else if (acc < -1) acc = -1;
+            store[i] = Math.round(acc * 32767);
+          }
+        }
+        return store;
       }
-      return store;
+      // Resample in two-minute windows so only one small rendered chunk
+      // exists at a time instead of a second full-length copy.
+      var CHUNK_S = 120;
+      var offset = 0, outPos = 0;
+      function step(){
+        if (offset >= decoded.duration || outPos >= totalOut) return store;
+        var dur = Math.min(CHUNK_S, decoded.duration - offset);
+        var outLen = Math.min(Math.round(dur * SR), totalOut - outPos);
+        if (outLen <= 0) return store;
+        var offline = new OfflineAudioContext(1, outLen, SR);
+        var src = offline.createBufferSource();
+        src.buffer = decoded;
+        src.connect(offline.destination);
+        src.start(0, offset, dur);
+        return offline.startRendering().then(function(rendered){
+          var rd = rendered.getChannelData(0);
+          writeMono(store, outPos, rd, Math.min(rd.length, outLen));
+          outPos += outLen;
+          offset += dur;
+          return step();
+        });
+      }
+      return step();
     });
   }
 

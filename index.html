@@ -1,0 +1,755 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="color-scheme" content="light dark" />
+<link rel="icon" href="data:," />
+<title>Audio Transcriber</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Libre+Franklin:wght@400;500;600;800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+<style>
+  :root{
+    --bg:#f4f4f1; --surface:#ffffff; --surface-2:#ececea; --ink:#1c1e1c; --ink-2:#5a5e5a;
+    --line:#d9dad4; --accent:#0f766e; --accent-ink:#ffffff; --accent-soft:#e0efec;
+    --warn:#b45309; --danger:#b3261e; --radius:14px;
+    color-scheme: light;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#141615; --surface:#1e2120; --surface-2:#262a29;
+      --ink:#eceeec; --ink-2:#a7aca7; --line:#343836; --accent:#2dd4bf; --accent-ink:#06231f;
+      --accent-soft:#173a35; --warn:#f0b35e; --danger:#ff8a80;
+      color-scheme: dark;
+    }
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--bg); color:var(--ink);
+    font-family:"Libre Franklin", system-ui, -apple-system, "Segoe UI", sans-serif;
+    font-size:16px; line-height:1.55;
+    -webkit-font-smoothing:antialiased;
+  }
+  button,[role="button"],select,summary,input:not([type="checkbox"],[type="radio"]){min-height:2.25rem}
+  button{font:inherit; cursor:pointer}
+  .wrap{max-width:1060px; margin:0 auto; padding:28px 18px 56px}
+  h1{
+    font-size:clamp(28px,4.5vw,40px); font-weight:800; letter-spacing:-0.02em;
+    line-height:1.08; margin:0 0 10px;
+  }
+  .lede{color:var(--ink-2); max-width:62ch; margin:0 0 26px; font-size:17px}
+  .lede strong{color:var(--ink)}
+  .grid{display:grid; grid-template-columns:1fr; gap:18px}
+  @media (min-width:880px){ .grid{grid-template-columns:400px 1fr; align-items:start} }
+  .panel{
+    background:var(--surface); border:1px solid var(--line); border-radius:var(--radius);
+    padding:20px;
+  }
+  .panel h2{font-size:15px; font-weight:600; margin:0 0 12px; letter-spacing:0.01em}
+  .drop{
+    border:2px dashed var(--line); border-radius:12px; padding:26px 16px; text-align:center;
+    background:var(--surface-2); transition:border-color .15s, background .15s;
+  }
+  .drop.drag{border-color:var(--accent); background:var(--accent-soft)}
+  .drop .big{font-weight:600; font-size:16px; margin:0 0 4px}
+  .drop .small{color:var(--ink-2); font-size:13.5px; margin:0 0 14px}
+  .btn{
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+    border-radius:10px; border:1px solid var(--line); background:var(--surface);
+    color:var(--ink); padding:9px 16px; font-weight:600; font-size:15px; min-height:44px;
+    text-decoration:none;
+  }
+  .btn:hover{border-color:var(--ink-2)}
+  .btn.primary{background:var(--accent); border-color:var(--accent); color:var(--accent-ink)}
+  .btn.primary:hover{filter:brightness(1.07)}
+  .btn.primary:disabled{opacity:.45; cursor:not-allowed; filter:none}
+  .btn.danger{color:var(--danger); border-color:var(--danger)}
+  .btn.small{min-height:40px; padding:6px 12px; font-size:14px}
+  .btn:disabled{opacity:.45; cursor:not-allowed}
+  .or{display:flex; align-items:center; gap:12px; color:var(--ink-2); font-size:13px; margin:16px 0}
+  .or::before,.or::after{content:""; flex:1; height:1px; background:var(--line)}
+  .rec-row{display:flex; align-items:center; gap:12px; flex-wrap:wrap}
+  .rec-dot{width:11px; height:11px; border-radius:50%; background:var(--danger); display:none}
+  .recording .rec-dot{display:inline-block; animation:pulse 1.1s infinite}
+  @keyframes pulse{0%,100%{opacity:1}50%{opacity:.25}}
+  @media (prefers-reduced-motion: reduce){ .recording .rec-dot{animation:none} }
+  .fileinfo{
+    display:none; margin-top:16px; border:1px solid var(--line); border-radius:10px; padding:12px 14px;
+  }
+  .fileinfo.show{display:block}
+  .fileinfo .name{font-weight:600; word-break:break-all; font-size:15px}
+  .fileinfo .meta{color:var(--ink-2); font-size:13.5px; margin-top:2px}
+  .fileinfo audio{width:100%; margin-top:10px}
+  .field{margin-top:18px}
+  .field label{display:block; font-size:13.5px; font-weight:600; margin-bottom:8px}
+  .pills{display:flex; flex-wrap:wrap; gap:8px}
+  .pill{
+    border:1px solid var(--line); background:var(--surface); color:var(--ink);
+    border-radius:999px; padding:8px 16px; font-weight:500; font-size:14.5px; min-height:40px;
+  }
+  .pill[aria-pressed="true"]{background:var(--ink); color:var(--bg); border-color:var(--ink)}
+  .pill:disabled{opacity:.5; cursor:not-allowed}
+  select{
+    width:100%; font:inherit; font-size:15px; padding:9px 12px; border-radius:10px;
+    border:1px solid var(--line); background:var(--surface); color:var(--ink); min-height:44px;
+  }
+  select:disabled{opacity:.5}
+  .hint{color:var(--ink-2); font-size:13.5px; margin-top:6px}
+  .go-row{display:flex; gap:10px; margin-top:22px}
+  .go{flex:1; font-size:16.5px; min-height:52px}
+  #cancelBtn{display:none; min-height:52px}
+  #cancelBtn.show{display:inline-flex}
+  .progress{display:none; margin-top:18px}
+  .progress.show{display:block}
+  .bar{height:10px; border-radius:6px; background:var(--surface-2); overflow:hidden; border:1px solid var(--line)}
+  .bar i{display:block; height:100%; width:0%; background:var(--accent); transition:width .25s}
+  .status{font-size:14px; color:var(--ink-2); margin-top:8px; min-height:1.4em}
+  .status.err{color:var(--danger)}
+  .transcript-head{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:12px}
+  .transcript-head h2{margin:0}
+  .actions{display:none; gap:8px; flex-wrap:wrap}
+  .actions.show{display:flex}
+  .out{
+    white-space:pre-wrap; word-break:break-word; font-size:16.5px; line-height:1.7;
+    min-height:220px;
+  }
+  .out:empty::before{content:"Your transcript will appear here, slice by slice as each part finishes. Pick a file, choose the language, and hit Transcribe."; color:var(--ink-2)}
+  .segments{margin-top:18px; border-top:1px solid var(--line); padding-top:14px; display:none}
+  .segments.show{display:block}
+  .segments h3{font-size:13.5px; font-weight:600; margin:0 0 10px}
+  .seg{display:flex; gap:12px; padding:5px 0; font-size:14.5px; align-items:baseline}
+  .seg time{font-family:"IBM Plex Mono", ui-monospace, monospace; font-size:12.5px; color:var(--accent); white-space:nowrap}
+  .seg.gap span{color:var(--warn)}
+  .notes{margin-top:18px; color:var(--ink-2); font-size:14px}
+  .notes li{margin-bottom:5px}
+  .sr{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Transcribe audio, right in your browser</h1>
+  <p class="lede">Drop in a recording and get a transcript in <strong>English, German or Italian</strong>. Long recordings are <strong>sliced at natural pauses</strong> and transcribed piece by piece, with the text streaming in as each slice finishes, so even a two-hour file stays light on memory. The Whisper speech model runs on your device, so <strong>your audio never leaves this page</strong> and there is nothing to sign up for.</p>
+
+  <div class="grid">
+    <section class="panel" aria-label="Audio input and settings">
+      <h2>1. Add audio</h2>
+      <div class="drop" id="drop">
+        <p class="big">Drag and drop an audio file</p>
+        <p class="small">MP3, WAV, M4A, OGG, WebM or MP4 audio, any length</p>
+        <button class="btn" id="browseBtn" type="button">Choose a file</button>
+        <input class="sr" type="file" id="fileInput" accept="audio/*,video/mp4,.mp3,.wav,.m4a,.ogg,.webm,.flac" />
+      </div>
+
+      <div class="or">or record instead</div>
+      <div class="rec-row" id="recRow">
+        <span class="rec-dot" aria-hidden="true"></span>
+        <button class="btn" id="recBtn" type="button">● Record from microphone</button>
+        <span class="hint" id="recTime" aria-live="polite"></span>
+      </div>
+
+      <div class="fileinfo" id="fileInfo">
+        <div class="name" id="fileName"></div>
+        <div class="meta" id="fileMeta"></div>
+        <audio id="player" controls preload="metadata"></audio>
+      </div>
+
+      <div class="field">
+        <label id="langLabel">2. Spoken language</label>
+        <div class="pills" role="group" aria-labelledby="langLabel" id="langPills">
+          <button type="button" class="pill" data-lang="auto" aria-pressed="false">Auto-detect</button>
+          <button type="button" class="pill" data-lang="en" aria-pressed="true">English</button>
+          <button type="button" class="pill" data-lang="de" aria-pressed="false">German</button>
+          <button type="button" class="pill" data-lang="it" aria-pressed="false">Italian</button>
+        </div>
+        <p class="hint">Setting the language is faster and more accurate than auto-detect.</p>
+      </div>
+
+      <div class="field">
+        <label for="modelSel">3. Model</label>
+        <select id="modelSel">
+          <option value="onnx-community/whisper-tiny">Tiny: fastest, good for clear speech (about 40 MB)</option>
+          <option value="onnx-community/whisper-base" selected>Base: balanced speed and accuracy (about 80 MB)</option>
+          <option value="onnx-community/whisper-small">Small: stronger for German and Italian (about 250 MB)</option>
+          <option value="onnx-community/whisper-large-v3-turbo">Large v3 Turbo: best accuracy, big download (about 940 MB)</option>
+        </select>
+        <p class="hint">The model downloads once, the first time you transcribe, and is then cached in your browser. Download size varies a little between the GPU and CPU builds.</p>
+        <p class="hint" id="accelHint">Acceleration: detecting what this browser supports…</p>
+      </div>
+
+      <div class="go-row">
+        <button class="btn primary go" id="goBtn" type="button" disabled>Transcribe</button>
+        <button class="btn danger" id="cancelBtn" type="button">Stop</button>
+      </div>
+
+      <div class="progress" id="progressBox">
+        <div class="bar"><i id="barFill"></i></div>
+        <p class="status" id="status" role="status" aria-live="polite"></p>
+      </div>
+    </section>
+
+    <section class="panel" aria-label="Transcript">
+      <div class="transcript-head">
+        <h2>Transcript</h2>
+        <div class="actions" id="actions">
+          <button class="btn small" id="copyBtn" type="button">Copy text</button>
+          <button class="btn small" id="txtBtn" type="button">Download .txt</button>
+          <button class="btn small" id="srtBtn" type="button">Download .srt</button>
+        </div>
+      </div>
+      <div class="out" id="out"></div>
+      <div class="segments" id="segments">
+        <h3>With timestamps</h3>
+        <div id="segList"></div>
+      </div>
+    </section>
+  </div>
+
+  <ul class="notes">
+    <li>How long files work: the audio is cut at natural pauses into slices of about 30 seconds. Each slice is transcribed on its own and then released from memory, so a two-hour recording needs about as much memory as a one-minute clip.</li>
+    <li>If the tab crashes or you stop a run halfway, everything transcribed so far stays on screen, ready to copy or download. Only the slice in progress is lost.</li>
+    <li>WebGPU: in Chrome and Edge the model can run on your graphics card, several times faster than on the processor. Other browsers fall back to the CPU automatically, and if the GPU path ever fails mid-run, the job continues on CPU from the same slice.</li>
+    <li>Large v3 Turbo is the most accurate model here and the best pick for German and Italian, but it is a big one-time download and slow on CPU alone. On a phone, start with Tiny or Base.</li>
+    <li>Nothing is uploaded anywhere. Closing the tab clears the recording from memory; the downloaded model stays cached for next time.</li>
+  </ul>
+</div>
+
+<script>
+(function(){
+  "use strict";
+  var SR = 16000;
+  var drop = document.getElementById('drop');
+  var browseBtn = document.getElementById('browseBtn');
+  var fileInput = document.getElementById('fileInput');
+  var fileInfo = document.getElementById('fileInfo');
+  var fileName = document.getElementById('fileName');
+  var fileMeta = document.getElementById('fileMeta');
+  var player = document.getElementById('player');
+  var goBtn = document.getElementById('goBtn');
+  var cancelBtn = document.getElementById('cancelBtn');
+  var progressBox = document.getElementById('progressBox');
+  var barFill = document.getElementById('barFill');
+  var statusEl = document.getElementById('status');
+  var out = document.getElementById('out');
+  var actions = document.getElementById('actions');
+  var segmentsBox = document.getElementById('segments');
+  var segList = document.getElementById('segList');
+  var modelSel = document.getElementById('modelSel');
+  var accelHint = document.getElementById('accelHint');
+  var recBtn = document.getElementById('recBtn');
+  var recRow = document.getElementById('recRow');
+  var recTime = document.getElementById('recTime');
+  var langPills = document.getElementById('langPills');
+
+  var currentBlob = null;
+  var currentName = 'recording';
+  var language = 'en';
+  var worker = null;
+  var busy = false;
+  var cancelled = false;
+  var runSeq = 0;
+  var pending = null;
+  var prepared = null; // { blob, store:Int16Array, slices:[{start,end}] }
+  var fullText = '';
+  var allChunks = [];
+  var lastResult = null;
+  var gotFirstResult = false;
+  var preferWebGPU = false;
+
+  function fmtBytes(b){
+    if (b < 1024) return b + ' B';
+    if (b < 1048576) return (b/1024).toFixed(1) + ' KB';
+    return (b/1048576).toFixed(1) + ' MB';
+  }
+  function fmtDur(s){
+    if (!isFinite(s)) return '';
+    s = Math.max(0, Math.round(s));
+    var h = Math.floor(s/3600), m = Math.floor((s%3600)/60), r = s%60;
+    var mm = h ? (m < 10 ? '0' : '') + m : String(m);
+    return (h ? h + ':' : '') + mm + ':' + (r < 10 ? '0' : '') + r;
+  }
+  function fmtEta(sec){
+    if (sec < 90) return Math.round(sec) + ' sec';
+    if (sec < 3600) return Math.round(sec/60) + ' min';
+    return (sec/3600).toFixed(1) + ' h';
+  }
+  function setStatus(msg, isErr){
+    statusEl.textContent = msg || '';
+    statusEl.className = 'status' + (isErr ? ' err' : '');
+    progressBox.classList.add('show');
+  }
+  function setProgress(pct){
+    barFill.style.width = Math.max(0, Math.min(100, pct)) + '%';
+  }
+
+  // WebGPU detection, used for the hint text and as the worker's preference.
+  if (navigator.gpu && navigator.gpu.requestAdapter) {
+    navigator.gpu.requestAdapter().then(function(adapter){
+      preferWebGPU = !!adapter;
+      accelHint.textContent = adapter
+        ? 'Acceleration: WebGPU is available, so transcription runs on your GPU, several times faster than on CPU.'
+        : 'Acceleration: CPU (WebAssembly). WebGPU is not available in this browser, so transcription runs on the processor instead.';
+    }).catch(function(){
+      accelHint.textContent = 'Acceleration: CPU (WebAssembly).';
+    });
+  } else {
+    accelHint.textContent = 'Acceleration: CPU (WebAssembly). WebGPU is not available in this browser, so transcription runs on the processor instead.';
+  }
+
+  function setFile(blob, name){
+    if (busy) stopRun();
+    currentBlob = blob;
+    currentName = name || 'audio';
+    prepared = null;
+    if (player.src) URL.revokeObjectURL(player.src);
+    player.src = URL.createObjectURL(blob);
+    fileName.textContent = currentName;
+    fileMeta.textContent = fmtBytes(blob.size) + (blob.type ? ' · ' + blob.type : '');
+    fileInfo.classList.add('show');
+    goBtn.disabled = busy ? true : false;
+    lastResult = null;
+    fullText = '';
+    allChunks = [];
+    out.textContent = '';
+    actions.classList.remove('show');
+    segmentsBox.classList.remove('show');
+    segList.innerHTML = '';
+  }
+
+  browseBtn.addEventListener('click', function(){ fileInput.click(); });
+  fileInput.addEventListener('change', function(){
+    if (fileInput.files && fileInput.files[0]) setFile(fileInput.files[0], fileInput.files[0].name);
+  });
+  ['dragenter','dragover'].forEach(function(ev){
+    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.add('drag'); });
+  });
+  ['dragleave','drop'].forEach(function(ev){
+    drop.addEventListener(ev, function(e){ e.preventDefault(); drop.classList.remove('drag'); });
+  });
+  drop.addEventListener('drop', function(e){
+    var f = e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files[0];
+    if (f) setFile(f, f.name);
+  });
+  player.addEventListener('loadedmetadata', function(){
+    if (currentBlob && isFinite(player.duration)) {
+      fileMeta.textContent = fmtBytes(currentBlob.size) + ' · ' + fmtDur(player.duration) + ' long';
+    }
+  });
+
+  langPills.addEventListener('click', function(e){
+    var btn = e.target.closest('.pill');
+    if (!btn) return;
+    language = btn.getAttribute('data-lang');
+    var pills = this.querySelectorAll('.pill');
+    for (var i = 0; i < pills.length; i++) pills[i].setAttribute('aria-pressed', pills[i] === btn ? 'true' : 'false');
+  });
+
+  // Microphone recording
+  var mediaRecorder = null, recChunks = [], recTimer = null, recStart = 0;
+  recBtn.addEventListener('click', function(){
+    if (mediaRecorder && mediaRecorder.state === 'recording') { mediaRecorder.stop(); return; }
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+      setStatus('Microphone recording is not supported in this browser. Upload a file instead.', true);
+      return;
+    }
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream){
+      recChunks = [];
+      mediaRecorder = new MediaRecorder(stream);
+      mediaRecorder.ondataavailable = function(e){ if (e.data.size) recChunks.push(e.data); };
+      mediaRecorder.onstop = function(){
+        stream.getTracks().forEach(function(t){ t.stop(); });
+        clearInterval(recTimer);
+        recRow.classList.remove('recording');
+        recBtn.textContent = '● Record from microphone';
+        recTime.textContent = '';
+        var blob = new Blob(recChunks, { type: mediaRecorder.mimeType || 'audio/webm' });
+        setFile(blob, 'microphone-recording.webm');
+      };
+      mediaRecorder.start();
+      recStart = Date.now();
+      recRow.classList.add('recording');
+      recBtn.textContent = '■ Stop recording';
+      recTimer = setInterval(function(){
+        recTime.textContent = fmtDur((Date.now() - recStart) / 1000) + ' recording';
+      }, 500);
+    }).catch(function(){
+      setStatus('Microphone access was blocked. Allow mic access in the browser, or upload a file instead.', true);
+    });
+  });
+
+  // Decode to 16 kHz mono, stored as Int16 to halve the memory footprint.
+  // Per-slice float copies are made one at a time during transcription and
+  // then released, so peak memory stays flat however long the recording is.
+  function monoFloat(decoded){
+    var len = decoded.length, ch = decoded.numberOfChannels;
+    var outArr = new Float32Array(len);
+    for (var c = 0; c < ch; c++) {
+      var d = decoded.getChannelData(c);
+      for (var i = 0; i < len; i++) outArr[i] += d[i] / ch;
+    }
+    return outArr;
+  }
+  function decodeToInt16(blob){
+    return blob.arrayBuffer().then(function(buf){
+      var AC = window.AudioContext || window.webkitAudioContext;
+      var ctx = new AC({ sampleRate: SR });
+      return ctx.decodeAudioData(buf).then(function(decoded){
+        var closed = (ctx.close ? ctx.close() : Promise.resolve()).catch(function(){});
+        return closed.then(function(){ return decoded; });
+      });
+    }).then(function(decoded){
+      if (decoded.sampleRate === SR) return monoFloat(decoded);
+      var len = Math.ceil(decoded.duration * SR);
+      var offline = new OfflineAudioContext(1, len, SR);
+      var src = offline.createBufferSource();
+      src.buffer = decoded;
+      src.connect(offline.destination);
+      src.start(0);
+      return offline.startRendering().then(function(rendered){
+        return rendered.getChannelData(0).slice(0);
+      });
+    }).then(function(floatMono){
+      var store = new Int16Array(floatMono.length);
+      for (var i = 0; i < floatMono.length; i++) {
+        var v = floatMono[i];
+        if (v > 1) v = 1; else if (v < -1) v = -1;
+        store[i] = Math.round(v * 32767);
+      }
+      return store;
+    });
+  }
+
+  // Silence detection: frame energy in dB, an adaptive threshold from the
+  // recording's own noise floor, and silence runs of at least 0.6 s. Slices
+  // aim for about 30 s, never exceed 55 s, and are cut at the midpoint of a
+  // pause so no word is split. Without a usable pause, a slice is hard-cut.
+  function planSlices(store){
+    var totalSec = store.length / SR;
+    var MAX = 55, MIN = 10, TARGET = 30;
+    if (totalSec <= MAX) return [{ start: 0, end: totalSec }];
+    var frameLen = Math.floor(SR * 0.02);
+    var nFrames = Math.floor(store.length / frameLen);
+    var db = new Float32Array(nFrames);
+    var i, j;
+    for (i = 0; i < nFrames; i++) {
+      var sum = 0, off = i * frameLen;
+      for (j = 0; j < frameLen; j++) { var v = store[off + j] / 32768; sum += v * v; }
+      db[i] = 20 * Math.log10(Math.sqrt(sum / frameLen) + 1e-7);
+    }
+    var sorted = Float32Array.from(db).sort();
+    var floorDb = sorted[Math.floor(nFrames * 0.10)];
+    var thr = Math.min(floorDb + 12, -35);
+    var minSilFrames = Math.round(0.6 / 0.02);
+    var mids = [];
+    var run = 0, runStart = 0;
+    for (i = 0; i <= nFrames; i++) {
+      var silent = i < nFrames && db[i] < thr;
+      if (silent) { if (run === 0) runStart = i; run++; }
+      else {
+        if (run >= minSilFrames) mids.push(((runStart + i) / 2) * frameLen / SR);
+        run = 0;
+      }
+    }
+    db = null; sorted = null;
+    var slices = [], pos = 0;
+    while (totalSec - pos > MAX + 4) {
+      var lo = pos + MIN, hi = pos + MAX, target = pos + TARGET;
+      var best = -1, bestDist = Infinity;
+      for (var k = 0; k < mids.length; k++) {
+        var m = mids[k];
+        if (m < lo) continue;
+        if (m > hi) break;
+        var d = Math.abs(m - target);
+        if (d < bestDist) { bestDist = d; best = m; }
+      }
+      var cut = best > 0 ? best : pos + MAX;
+      slices.push({ start: pos, end: cut });
+      pos = cut;
+    }
+    slices.push({ start: pos, end: totalSec });
+    return slices;
+  }
+
+  function sliceSamples(store, s){
+    var a = Math.floor(s.start * SR);
+    var b = Math.min(store.length, Math.ceil(s.end * SR));
+    var outArr = new Float32Array(b - a);
+    for (var i = a; i < b; i++) outArr[i - a] = store[i] / 32768;
+    return outArr;
+  }
+
+  function getWorker(){
+    if (worker) return worker;
+    worker = new Worker('data:application/javascript;base64,aW1wb3J0IHsgcGlwZWxpbmUsIGVudiB9IGZyb20gJ2h0dHBzOi8vY2RuLmpzZGVsaXZyLm5ldC9ucG0vQGh1Z2dpbmdmYWNlL3RyYW5zZm9ybWVyc0AzLjUuMS8rZXNtJzsKCmVudi5hbGxvd0xvY2FsTW9kZWxzID0gZmFsc2U7CmVudi51c2VCcm93c2VyQ2FjaGUgPSB0cnVlOwoKdmFyIExBTkdVQUdFUyA9IHsgZW46ICdlbmdsaXNoJywgZGU6ICdnZXJtYW4nLCBpdDogJ2l0YWxpYW4nIH07CgpsZXQgdHJhbnNjcmliZXIgPSBudWxsOwpsZXQgbG9hZGVkS2V5ID0gbnVsbDsKbGV0IGFjdGl2ZURldmljZSA9IG51bGw7CgovLyBQcmVjaXNpb24gcGVyIG1vZGVsIHBhcnQuIE9uIFdlYkdQVSB0aGUgcTggZGVjb2RlciBwcm9kdWNlcyBnYXJiYWdlIG91dHB1dAovLyAoYSBrbm93biB1cHN0cmVhbSBpc3N1ZSksIHNvIHRoZSBkZWNvZGVyIHJ1bnMgcTQgdGhlcmU7IHRoZSBlbmNvZGVyIHJ1bnMKLy8gZnAzMiBmb3IgdGhlIHNtYWxsIG1vZGVscyBhbmQgcTggZm9yIExhcmdlIHYzIFR1cmJvLCB3aG9zZSBmcDMyIGVuY29kZXIKLy8gYWxvbmUgd291bGQgYmUgYSBtdWx0aS1HQiBkb3dubG9hZC4gT24gQ1BVIChXQVNNKSBldmVyeXRoaW5nIHJ1bnMgcTguCmZ1bmN0aW9uIGR0eXBlRm9yKG1vZGVsSWQsIGRldmljZSkgewogIGlmIChkZXZpY2UgPT09ICd3ZWJncHUnKSB7CiAgICBpZiAobW9kZWxJZC5pbmRleE9mKCdsYXJnZS12My10dXJibycpICE9PSAtMSkgewogICAgICByZXR1cm4geyBlbmNvZGVyX21vZGVsOiAncTgnLCBkZWNvZGVyX21vZGVsX21lcmdlZDogJ3E0JyB9OwogICAgfQogICAgcmV0dXJuIHsgZW5jb2Rlcl9tb2RlbDogJ2ZwMzInLCBkZWNvZGVyX21vZGVsX21lcmdlZDogJ3E0JyB9OwogIH0KICByZXR1cm4gJ3E4JzsKfQoKYXN5bmMgZnVuY3Rpb24gd2ViZ3B1QXZhaWxhYmxlKCkgewogIHRyeSB7CiAgICBpZiAoIW5hdmlnYXRvci5ncHUpIHJldHVybiBmYWxzZTsKICAgIGNvbnN0IGFkYXB0ZXIgPSBhd2FpdCBuYXZpZ2F0b3IuZ3B1LnJlcXVlc3RBZGFwdGVyKCk7CiAgICByZXR1cm4gISFhZGFwdGVyOwogIH0gY2F0Y2ggKGUpIHsKICAgIHJldHVybiBmYWxzZTsKICB9Cn0KCmFzeW5jIGZ1bmN0aW9uIGxvYWRQaXBlbGluZShtb2RlbElkLCBkZXZpY2UpIHsKICBjb25zdCBrZXkgPSBtb2RlbElkICsgJ3wnICsgZGV2aWNlOwogIGlmICh0cmFuc2NyaWJlciAmJiBsb2FkZWRLZXkgPT09IGtleSkgcmV0dXJuIHRyYW5zY3JpYmVyOwogIGlmICh0cmFuc2NyaWJlcikgewogICAgdHJ5IHsgYXdhaXQgdHJhbnNjcmliZXIuZGlzcG9zZSgpOyB9IGNhdGNoIChlKSB7fQogICAgdHJhbnNjcmliZXIgPSBudWxsOwogIH0KICBsb2FkZWRLZXkgPSBrZXk7CiAgYWN0aXZlRGV2aWNlID0gZGV2aWNlOwogIHRyYW5zY3JpYmVyID0gYXdhaXQgcGlwZWxpbmUoJ2F1dG9tYXRpYy1zcGVlY2gtcmVjb2duaXRpb24nLCBtb2RlbElkLCB7CiAgICBkZXZpY2U6IGRldmljZSwKICAgIGR0eXBlOiBkdHlwZUZvcihtb2RlbElkLCBkZXZpY2UpLAogICAgcHJvZ3Jlc3NfY2FsbGJhY2s6IChkYXRhKSA9PiB7CiAgICAgIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAncHJvZ3Jlc3MnLCBkYXRhIH0pOwogICAgfSwKICB9KTsKICByZXR1cm4gdHJhbnNjcmliZXI7Cn0KCmFzeW5jIGZ1bmN0aW9uIGVuc3VyZVBpcGVsaW5lKG1vZGVsSWQsIHByZWZlcldlYkdQVSkgewogIGlmICh0cmFuc2NyaWJlciAmJiBsb2FkZWRLZXkgJiYgbG9hZGVkS2V5LmluZGV4T2YobW9kZWxJZCArICd8JykgPT09IDApIHJldHVybjsKICBzZWxmLnBvc3RNZXNzYWdlKHsgdHlwZTogJ3N0YXR1cycsIHN0YXR1czogJ2xvYWRpbmctbW9kZWwnIH0pOwogIGlmIChwcmVmZXJXZWJHUFUgJiYgKGF3YWl0IHdlYmdwdUF2YWlsYWJsZSgpKSkgewogICAgdHJ5IHsKICAgICAgYXdhaXQgbG9hZFBpcGVsaW5lKG1vZGVsSWQsICd3ZWJncHUnKTsKICAgICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdkZXZpY2UnLCBkZXZpY2U6ICd3ZWJncHUnIH0pOwogICAgICByZXR1cm47CiAgICB9IGNhdGNoIChlKSB7CiAgICAgIC8vIEdQVSBsb2FkIGZhaWxlZDogZmFsbCB0aHJvdWdoIHRvIHRoZSBDUFUgYnVpbGQuCiAgICB9CiAgfQogIGF3YWl0IGxvYWRQaXBlbGluZShtb2RlbElkLCAnd2FzbScpOwogIHNlbGYucG9zdE1lc3NhZ2UoeyB0eXBlOiAnc3RhdHVzJywgc3RhdHVzOiAnZGV2aWNlJywgZGV2aWNlOiAnd2FzbScgfSk7Cn0KCi8vIE9uZSBzbGljZSBhdCBhIHRpbWU6IHRoZSBtYWluIHRocmVhZCBzZW5kcyBhIHNsaWNlLCB3YWl0cyBmb3IgaXRzIHJlc3VsdCwKLy8gdGhlbiBzZW5kcyB0aGUgbmV4dC4gVGhlIHNsaWNlIGF1ZGlvIGFycml2ZXMgYXMgYSB0cmFuc2ZlcnJlZCBidWZmZXIgYW5kIGlzCi8vIGRyb3BwZWQgYXMgc29vbiBhcyB0aGlzIGhhbmRsZXIgcmV0dXJucywgc28gbWVtb3J5IHN0YXlzIGZsYXQuCnNlbGYub25tZXNzYWdlID0gYXN5bmMgKGV2ZW50KSA9PiB7CiAgY29uc3QgbXNnID0gZXZlbnQuZGF0YSB8fCB7fTsKICBpZiAobXNnLnR5cGUgIT09ICd0cmFuc2NyaWJlJykgcmV0dXJuOwogIGNvbnN0IHsgc2xpY2VJZCwgYXVkaW8sIGxhbmd1YWdlLCBtb2RlbElkLCBwcmVmZXJXZWJHUFUgfSA9IG1zZzsKICB0cnkgewogICAgYXdhaXQgZW5zdXJlUGlwZWxpbmUobW9kZWxJZCwgcHJlZmVyV2ViR1BVKTsKICAgIGNvbnN0IG9wdGlvbnMgPSB7CiAgICAgIGNodW5rX2xlbmd0aF9zOiAzMCwKICAgICAgc3RyaWRlX2xlbmd0aF9zOiA1LAogICAgICByZXR1cm5fdGltZXN0YW1wczogdHJ1ZSwKICAgICAgdGFzazogJ3RyYW5zY3JpYmUnLAogICAgfTsKICAgIGlmIChsYW5ndWFnZSAmJiBsYW5ndWFnZSAhPT0gJ2F1dG8nICYmIExBTkdVQUdFU1tsYW5ndWFnZV0pIHsKICAgICAgb3B0aW9ucy5sYW5ndWFnZSA9IExBTkdVQUdFU1tsYW5ndWFnZV07CiAgICB9CiAgICBzZWxmLnBvc3RNZXNzYWdlKHsgdHlwZTogJ3N0YXR1cycsIHN0YXR1czogJ3RyYW5zY3JpYmluZycgfSk7CiAgICBsZXQgcmVzdWx0OwogICAgdHJ5IHsKICAgICAgcmVzdWx0ID0gYXdhaXQgdHJhbnNjcmliZXIoYXVkaW8sIG9wdGlvbnMpOwogICAgfSBjYXRjaCAoZXJyKSB7CiAgICAgIGlmIChhY3RpdmVEZXZpY2UgPT09ICd3ZWJncHUnKSB7CiAgICAgICAgLy8gR1BVIHBhdGggZmFpbGVkIG1pZC1ydW46IHJlYnVpbGQgb24gQ1BVIGFuZCByZXRyeSB0aGlzIHNsaWNlIG9uY2UuCiAgICAgICAgYXdhaXQgbG9hZFBpcGVsaW5lKG1vZGVsSWQsICd3YXNtJyk7CiAgICAgICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzdGF0dXMnLCBzdGF0dXM6ICdkZXZpY2UnLCBkZXZpY2U6ICd3YXNtJywgZmFsbGJhY2s6IHRydWUgfSk7CiAgICAgICAgcmVzdWx0ID0gYXdhaXQgdHJhbnNjcmliZXIoYXVkaW8sIG9wdGlvbnMpOwogICAgICB9IGVsc2UgewogICAgICAgIHRocm93IGVycjsKICAgICAgfQogICAgfQogICAgc2VsZi5wb3N0TWVzc2FnZSh7IHR5cGU6ICdzbGljZS1yZXN1bHQnLCBzbGljZUlkLCByZXN1bHQgfSk7CiAgfSBjYXRjaCAoZXJyKSB7CiAgICBzZWxmLnBvc3RNZXNzYWdlKHsKICAgICAgdHlwZTogJ3NsaWNlLWVycm9yJywKICAgICAgc2xpY2VJZCwKICAgICAgbWVzc2FnZTogKGVyciAmJiBlcnIubWVzc2FnZSkgPyBlcnIubWVzc2FnZSA6IFN0cmluZyhlcnIpLAogICAgfSk7CiAgfQp9Owo=', { type: 'module' });
+    worker.onmessage = function(e){
+      var msg = e.data || {};
+      if (msg.type === 'progress') {
+        var d = msg.data || {};
+        if (gotFirstResult) return;
+        if (d.status === 'progress' && typeof d.progress === 'number') {
+          setProgress(d.progress);
+          setStatus('Downloading model: ' + (d.file || '') + ' (' + Math.round(d.progress) + '%)');
+        } else if (d.status === 'done') {
+          setStatus('Model file ready: ' + (d.file || ''));
+        } else if (d.status === 'initiate') {
+          setStatus('Downloading model: ' + (d.file || ''));
+        }
+      } else if (msg.type === 'status') {
+        if (msg.status === 'loading-model' && !gotFirstResult) {
+          setStatus('Loading the speech model. The first run downloads it, later runs are instant.');
+        }
+        if (msg.status === 'device') {
+          if (msg.device === 'webgpu') {
+            accelHint.textContent = 'Acceleration: WebGPU, running on your GPU.';
+          } else {
+            accelHint.textContent = 'Acceleration: CPU (WebAssembly).';
+            if (msg.fallback && busy) setStatus('The GPU path hit a problem, so this run continues on CPU from the same slice.');
+          }
+        }
+      } else if (msg.type === 'slice-result') {
+        if (pending && msg.sliceId === pending.sliceId) {
+          var p = pending; pending = null; p.resolve(msg.result);
+        }
+      } else if (msg.type === 'slice-error') {
+        if (pending && msg.sliceId === pending.sliceId) {
+          var p2 = pending; pending = null; p2.reject(new Error(msg.message || 'Transcription failed'));
+        }
+      }
+    };
+    worker.onerror = function(){
+      // A crashed worker loses only the slice in flight; the next slice
+      // spins up a fresh worker and reloads the model from the browser cache.
+      var p = pending; pending = null; worker = null;
+      if (p) p.reject(new Error('The transcription engine crashed'));
+    };
+    return worker;
+  }
+
+  function sendSlice(sliceId, audio){
+    return new Promise(function(resolve, reject){
+      var w = getWorker();
+      pending = { sliceId: sliceId, resolve: resolve, reject: reject };
+      w.postMessage({
+        type: 'transcribe', sliceId: sliceId, audio: audio,
+        language: language, modelId: modelSel.value, preferWebGPU: preferWebGPU
+      }, [audio.buffer]);
+    });
+  }
+
+  function addSegRow(start, end, text, isGap){
+    var row = document.createElement('div');
+    row.className = 'seg' + (isGap ? ' gap' : '');
+    var t = document.createElement('time');
+    t.textContent = fmtDur(start) + ' – ' + fmtDur(end);
+    var span = document.createElement('span');
+    span.textContent = text;
+    row.appendChild(t); row.appendChild(span);
+    segList.appendChild(row);
+    segmentsBox.classList.add('show');
+  }
+
+  function appendResult(result, slice){
+    gotFirstResult = true;
+    var text = (result && result.text ? result.text : '').trim();
+    if (text) {
+      fullText = fullText ? fullText + ' ' + text : text;
+      out.textContent = fullText;
+      actions.classList.add('show');
+    }
+    var chunks = (result && result.chunks) || [];
+    var shown = 0;
+    chunks.forEach(function(c){
+      if (!c || !c.text || !c.timestamp) return;
+      var start = slice.start + (c.timestamp[0] || 0);
+      var end = slice.start + (c.timestamp[1] != null ? c.timestamp[1] : c.timestamp[0] || 0);
+      allChunks.push({ timestamp: [start, end], text: c.text });
+      addSegRow(start, end, c.text.trim(), false);
+      shown++;
+    });
+    if (!shown && text) {
+      allChunks.push({ timestamp: [slice.start, slice.end], text: text });
+      addSegRow(slice.start, slice.end, text, false);
+    }
+    lastResult = { text: fullText, chunks: allChunks };
+  }
+
+  function setControlsEnabled(enabled){
+    modelSel.disabled = !enabled;
+    var pills = langPills.querySelectorAll('.pill');
+    for (var i = 0; i < pills.length; i++) pills[i].disabled = !enabled;
+  }
+
+  function endRunUI(){
+    busy = false;
+    goBtn.disabled = !currentBlob;
+    goBtn.textContent = 'Transcribe';
+    cancelBtn.classList.remove('show');
+    setControlsEnabled(true);
+  }
+
+  function stopRun(){
+    cancelled = true;
+    runSeq++;
+    if (pending) { var p = pending; pending = null; p.reject(new Error('cancelled')); }
+    if (worker) { worker.terminate(); worker = null; }
+    endRunUI();
+    if (fullText) setStatus('Stopped. Everything transcribed so far is kept above, ready to copy or download.');
+    else setStatus('Stopped.');
+  }
+  cancelBtn.addEventListener('click', function(){ if (busy) stopRun(); });
+
+  goBtn.addEventListener('click', function(){
+    if (!currentBlob || busy) return;
+    busy = true;
+    cancelled = false;
+    gotFirstResult = false;
+    var myRun = ++runSeq;
+    goBtn.disabled = true;
+    goBtn.textContent = 'Working…';
+    cancelBtn.classList.add('show');
+    setControlsEnabled(false);
+    setProgress(0);
+    fullText = '';
+    allChunks = [];
+    lastResult = null;
+    out.textContent = '';
+    actions.classList.remove('show');
+    segmentsBox.classList.remove('show');
+    segList.innerHTML = '';
+    setStatus('Reading your audio…');
+
+    var prepPromise;
+    if (prepared && prepared.blob === currentBlob) {
+      prepPromise = Promise.resolve(prepared);
+    } else {
+      prepPromise = decodeToInt16(currentBlob).then(function(store){
+        setStatus('Finding natural pauses…');
+        var slices = planSlices(store);
+        prepared = { blob: currentBlob, store: store, slices: slices };
+        return prepared;
+      });
+    }
+
+    prepPromise.then(function(prep){
+      if (myRun !== runSeq) return;
+      var slices = prep.slices;
+      var totalSec = prep.store.length / SR;
+      var processed = 0, failures = 0;
+      var t0 = Date.now();
+      if (slices.length > 1) {
+        setStatus('Split into ' + slices.length + ' slices at natural pauses. Starting…');
+      }
+      var idx = 0;
+      function next(){
+        if (myRun !== runSeq) return;
+        if (idx >= slices.length) {
+          endRunUI();
+          setProgress(100);
+          var elapsed = fmtDur((Date.now() - t0) / 1000);
+          if (failures) {
+            setStatus('Done in ' + elapsed + '. ' + failures + ' of ' + slices.length + ' slices could not be transcribed and are marked in the timestamp list.', true);
+          } else if (slices.length > 1) {
+            setStatus('Done. All ' + slices.length + ' slices transcribed in ' + elapsed + '.');
+          } else {
+            setStatus('Done.');
+          }
+          return;
+        }
+        var slice = slices[idx];
+        if (slices.length > 1) {
+          setStatus('Transcribing slice ' + (idx + 1) + ' of ' + slices.length + ' · ' + fmtDur(processed) + ' of ' + fmtDur(totalSec) + ' done');
+        }
+        var attempts = 0;
+        function attempt(){
+          attempts++;
+          sendSlice(idx, sliceSamples(prep.store, slice)).then(function(result){
+            if (myRun !== runSeq) return;
+            appendResult(result, slice);
+            afterSlice();
+          }).catch(function(){
+            if (myRun !== runSeq || cancelled) return;
+            if (attempts < 2) { attempt(); return; }
+            failures++;
+            addSegRow(slice.start, slice.end, '(this slice could not be transcribed)', true);
+            afterSlice();
+          });
+        }
+        function afterSlice(){
+          processed += slice.end - slice.start;
+          idx++;
+          if (slices.length > 1 && idx < slices.length) {
+            var pct = totalSec ? (processed / totalSec) * 100 : 0;
+            setProgress(pct);
+            var msg = 'Slice ' + idx + ' of ' + slices.length + ' · ' + fmtDur(processed) + ' of ' + fmtDur(totalSec) + ' transcribed';
+            var elapsedSec = (Date.now() - t0) / 1000;
+            if (idx >= 2 && processed > 5 && elapsedSec > 2) {
+              var remain = (totalSec - processed) / (processed / elapsedSec);
+              if (isFinite(remain) && remain > 5) msg += ' · about ' + fmtEta(remain) + ' left';
+            }
+            setStatus(msg);
+          }
+          next();
+        }
+        attempt();
+      }
+      next();
+    }).catch(function(){
+      if (myRun !== runSeq) return;
+      endRunUI();
+      setStatus('Could not read that file as audio. Try MP3, WAV or M4A.', true);
+    });
+  });
+
+  function download(filename, content, mime){
+    var blob = new Blob([content], { type: mime || 'text/plain;charset=utf-8' });
+    var a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(function(){ URL.revokeObjectURL(a.href); a.remove(); }, 400);
+  }
+  function baseName(){
+    return currentName.replace(/\.[^.]+$/, '') || 'transcript';
+  }
+  function srtTime(s){
+    if (s == null || !isFinite(s)) s = 0;
+    var h = Math.floor(s/3600), m = Math.floor((s%3600)/60), sec = Math.floor(s%60), ms = Math.round((s - Math.floor(s))*1000);
+    function p(n, l){ var str = String(n); while (str.length < (l||2)) str = '0' + str; return str; }
+    return p(h) + ':' + p(m) + ':' + p(sec) + ',' + p(ms, 3);
+  }
+  document.getElementById('copyBtn').addEventListener('click', function(){
+    var btn = this;
+    var text = out.textContent || '';
+    function done(){ btn.textContent = 'Copied'; setTimeout(function(){ btn.textContent = 'Copy text'; }, 1600); }
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(function(){ fallback(); });
+    } else fallback();
+    function fallback(){
+      var ta = document.createElement('textarea');
+      ta.value = text; document.body.appendChild(ta); ta.select();
+      try { document.execCommand('copy'); done(); } catch(e){}
+      ta.remove();
+    }
+  });
+  document.getElementById('txtBtn').addEventListener('click', function(){
+    download(baseName() + '-transcript.txt', (out.textContent || '') + '\n');
+  });
+  document.getElementById('srtBtn').addEventListener('click', function(){
+    var chunks = (lastResult && lastResult.chunks) || [];
+    var lines = [], i = 1;
+    chunks.forEach(function(c){
+      if (!c || !c.text || !c.timestamp) return;
+      lines.push(String(i++));
+      lines.push(srtTime(c.timestamp[0]) + ' --> ' + srtTime(c.timestamp[1] || c.timestamp[0]));
+      lines.push(c.text.trim());
+      lines.push('');
+    });
+    if (!lines.length) lines = ['1', '00:00:00,000 --> 00:00:01,000', (out.textContent || ''), ''];
+    download(baseName() + '-subtitles.srt', lines.join('\n'), 'text/plain;charset=utf-8');
+  });
+})();
+</script>
+</body>
+</html>

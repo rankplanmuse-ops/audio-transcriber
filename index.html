@@ -49,12 +49,12 @@
   }
   .panel h2{font-size:15px; font-weight:600; margin:0 0 12px; letter-spacing:0.01em}
   .drop{
-    border:2px dashed var(--line); border-radius:12px; padding:26px 16px; text-align:center;
+    border:2px dashed var(--line); border-radius:12px; padding:13px 14px; text-align:center;
     background:var(--surface-2); transition:border-color .15s, background .15s;
   }
   .drop.drag{border-color:var(--accent); background:var(--accent-soft)}
   .drop .big{font-weight:600; font-size:16px; margin:0 0 4px}
-  .drop .small{color:var(--ink-2); font-size:13.5px; margin:0 0 14px}
+  .drop .small{color:var(--ink-2); font-size:13.5px; margin:0 0 9px}
   .btn{
     display:inline-flex; align-items:center; justify-content:center; gap:8px;
     border-radius:10px; border:1px solid var(--line); background:var(--surface);
@@ -101,10 +101,10 @@
   .go{flex:1; font-size:16.5px; min-height:52px}
   #cancelBtn{display:none; min-height:52px}
   #cancelBtn.show{display:inline-flex}
-  .progress{display:none; margin-top:18px}
-  .progress.show{display:block}
+  .progress{visibility:hidden; margin-top:18px; height:40px}
+  .progress.show{visibility:visible}
   .bar{height:10px; border-radius:6px; background:var(--surface-2); overflow:hidden; border:1px solid var(--line)}
-  .bar i{display:block; height:100%; width:0%; background:var(--accent); transition:width .25s}
+  .bar i{display:block; height:100%; width:0%; background:var(--accent); transition:width .3s linear}
   .status{font-size:14px; color:var(--ink-2); margin-top:8px; min-height:1.4em}
   .status.err{color:var(--danger)}
   .transcript-head{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap; margin-bottom:12px}
@@ -673,18 +673,36 @@ self.onmessage = async (event) => {
     var workerSource = document.getElementById('workerSource').textContent;
     workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
     worker = new Worker(workerUrl, { type: 'module' });
+    // Model-download progress is aggregated across every file the engine
+    // fetches and only ever moves forward. Showing each file's own 0-100%
+    // in turn made the bar jump backwards and the status line flicker
+    // between file names, which looked broken; one combined percentage
+    // with a steady label reads as a single calm download.
+    var dlFiles = {};
+    var dlShown = -1;
     worker.onmessage = function(e){
       var msg = e.data || {};
       if (msg.type === 'progress') {
         var d = msg.data || {};
         if (gotFirstResult) return;
-        if (d.status === 'progress' && typeof d.progress === 'number') {
-          setProgress(d.progress);
-          setStatus('Downloading model: ' + (d.file || '') + ' (' + Math.round(d.progress) + '%)');
-        } else if (d.status === 'done') {
-          setStatus('Model file ready: ' + (d.file || ''));
-        } else if (d.status === 'initiate') {
-          setStatus('Downloading model: ' + (d.file || ''));
+        if ((d.status === 'progress' || d.status === 'done' || d.status === 'initiate') && d.file) {
+          var f = dlFiles[d.file] || (dlFiles[d.file] = { loaded: 0, total: 0 });
+          if (typeof d.total === 'number' && d.total > 0) f.total = d.total;
+          if (d.status === 'done') { if (f.total) f.loaded = f.total; }
+          else if (typeof d.loaded === 'number' && d.loaded > f.loaded) f.loaded = d.loaded;
+          var sumL = 0, sumT = 0, k;
+          for (k in dlFiles) { sumL += dlFiles[k].loaded; sumT += dlFiles[k].total; }
+          if (sumT > 0) {
+            var pct = Math.floor(100 * sumL / sumT);
+            if (pct > dlShown) {
+              dlShown = pct;
+              setProgress(pct);
+              setStatus('Downloading the model (one time only): ' + pct + '% of ' + Math.max(1, Math.round(sumT / 1048576)) + ' MB');
+            }
+          } else if (dlShown < 0) {
+            dlShown = 0;
+            setStatus('Downloading the model (one time only)...');
+          }
         }
       } else if (msg.type === 'status') {
         if (msg.status === 'loading-model' && !gotFirstResult) {
@@ -692,6 +710,7 @@ self.onmessage = async (event) => {
         }
         if (msg.status === 'device' || msg.status === 'model-ready') {
           workerReady = true;
+          dlFiles = {}; dlShown = -1;
           if (msg.device === 'webgpu') {
             accelHint.textContent = 'Acceleration: WebGPU, running on your GPU.';
           } else {

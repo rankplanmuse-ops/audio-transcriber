@@ -674,33 +674,34 @@ self.onmessage = async (event) => {
     workerUrl = URL.createObjectURL(new Blob([workerSource], { type: 'text/javascript' }));
     worker = new Worker(workerUrl, { type: 'module' });
     // Model-download progress is aggregated across every file the engine
-    // fetches and only ever moves forward. Showing each file's own 0-100%
-    // in turn made the bar jump backwards and the status line flicker
-    // between file names, which looked broken; one combined percentage
-    // with a steady label reads as a single calm download.
+    // fetches. The status line shows live megabytes downloaded of the
+    // total known so far, which keeps moving for the whole download and
+    // proves the run is alive; the bar only moves forward and is capped
+    // at 99 until the engine confirms the model is ready. (An earlier
+    // version latched onto a percentage: the small config files finish
+    // first, so it showed 100% of 3 MB and then froze while the real
+    // model files, hundreds of MB, downloaded invisibly.)
     var dlFiles = {};
-    var dlShown = -1;
+    var dlBarMax = 0;
     worker.onmessage = function(e){
       var msg = e.data || {};
       if (msg.type === 'progress') {
         var d = msg.data || {};
         if (gotFirstResult) return;
         if ((d.status === 'progress' || d.status === 'done' || d.status === 'initiate') && d.file) {
-          var f = dlFiles[d.file] || (dlFiles[d.file] = { loaded: 0, total: 0 });
+          var f = dlFiles[d.file] || (dlFiles[d.file] = { loaded: 0, total: 0, done: false });
           if (typeof d.total === 'number' && d.total > 0) f.total = d.total;
-          if (d.status === 'done') { if (f.total) f.loaded = f.total; }
+          if (d.status === 'done') { f.done = true; if (f.total) f.loaded = f.total; }
           else if (typeof d.loaded === 'number' && d.loaded > f.loaded) f.loaded = d.loaded;
-          var sumL = 0, sumT = 0, k;
-          for (k in dlFiles) { sumL += dlFiles[k].loaded; sumT += dlFiles[k].total; }
+          var sumL = 0, sumT = 0, allDone = true, k;
+          for (k in dlFiles) { sumL += dlFiles[k].loaded; sumT += dlFiles[k].total; if (!dlFiles[k].done) allDone = false; }
+          var mb = function(b){ return Math.max(1, Math.round(b / 1048576)); };
           if (sumT > 0) {
-            var pct = Math.floor(100 * sumL / sumT);
-            if (pct > dlShown) {
-              dlShown = pct;
-              setProgress(pct);
-              setStatus('Downloading the model (one time only): ' + pct + '% of ' + Math.max(1, Math.round(sumT / 1048576)) + ' MB');
-            }
-          } else if (dlShown < 0) {
-            dlShown = 0;
+            var pct = Math.min(99, Math.floor(100 * sumL / sumT));
+            if (pct > dlBarMax) { dlBarMax = pct; setProgress(pct); }
+            if (allDone && sumT > 20971520) setStatus('Model downloaded (' + mb(sumT) + ' MB). Starting the engine...');
+            else setStatus('Downloading the model (one time only): ' + mb(sumL) + ' of ' + mb(sumT) + ' MB');
+          } else {
             setStatus('Downloading the model (one time only)...');
           }
         }
@@ -710,7 +711,7 @@ self.onmessage = async (event) => {
         }
         if (msg.status === 'device' || msg.status === 'model-ready') {
           workerReady = true;
-          dlFiles = {}; dlShown = -1;
+          dlFiles = {}; dlBarMax = 0;
           if (msg.device === 'webgpu') {
             accelHint.textContent = 'Acceleration: WebGPU, running on your GPU.';
           } else {

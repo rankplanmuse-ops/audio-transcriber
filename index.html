@@ -131,10 +131,47 @@
   .notes{margin-top:18px; color:var(--ink-2); font-size:14px}
   .notes li{margin-bottom:5px}
   .sr{position:absolute; width:1px; height:1px; overflow:hidden; clip:rect(0 0 0 0); white-space:nowrap}
+  /* Rankplan gate (email wall + soft daily cap). Added 2026-11-20. */
+  .gate-overlay{
+    position:fixed; inset:0; z-index:60; display:flex; align-items:center; justify-content:center;
+    background:rgba(10,14,13,.55); padding:18px;
+  }
+  .gate-overlay[hidden]{display:none}
+  .gate-card{
+    background:var(--surface); color:var(--ink); border:1px solid var(--line);
+    border-radius:var(--radius); max-width:440px; width:100%; padding:26px 24px;
+  }
+  .gate-card h2{font-size:20px; margin:0 0 8px}
+  .gate-card p{color:var(--ink-2); margin:0 0 14px; font-size:15px}
+  .gate-card label{display:block; font-size:13.5px; font-weight:600; margin-bottom:8px}
+  .gate-card input[type="email"]{
+    width:100%; font:inherit; font-size:15px; padding:9px 12px; border-radius:10px;
+    border:1px solid var(--line); background:var(--surface); color:var(--ink); min-height:44px;
+  }
+  .gate-err{color:var(--danger); font-size:14px; min-height:1.4em; margin:10px 0 0}
+  .gate-msg{
+    display:none; border:1px solid var(--warn); color:var(--warn); background:var(--surface);
+    border-radius:10px; padding:12px 14px; margin:0 0 18px; font-size:15px;
+  }
+  .gate-msg.show{display:block}
 </style>
 </head>
 <body>
+<div class="gate-overlay" id="gateOverlay" hidden>
+  <div class="gate-card" role="dialog" aria-modal="true" aria-labelledby="gateTitle">
+    <h2 id="gateTitle">Use the Rankplan Transcriber</h2>
+    <p>Enter your email to unlock the transcriber. Your audio never leaves this device: transcription runs entirely in your browser. The email is only so Rankplan can follow up and keep the tool sustainable.</p>
+    <form id="gateForm" novalidate>
+      <label for="gateEmail">Email address</label>
+      <input type="email" id="gateEmail" name="email" autocomplete="email" required />
+      <div id="tsWidget" style="margin-top:14px"></div>
+      <p class="gate-err" id="gateErr" role="alert"></p>
+      <button class="btn primary" id="gateBtn" type="submit" style="width:100%;margin-top:12px">Unlock the transcriber</button>
+    </form>
+  </div>
+</div>
 <div class="wrap">
+  <p class="gate-msg" id="gateMsg" role="alert"></p>
   <div class="grid">
     <section class="panel" aria-label="Audio input and settings">
       <h2>1. Add audio</h2>
@@ -931,6 +968,7 @@ self.onmessage = async (event) => {
 
   goBtn.addEventListener('click', function(){
     if (!currentBlob || busy) return;
+    if (window.RPGate && !window.RPGate.checkCap(player.duration)) return;
     busy = true;
     preloading = false;
     cancelled = false;
@@ -966,6 +1004,7 @@ self.onmessage = async (event) => {
       if (myRun !== runSeq) return;
       var slices = prep.slices;
       var totalSec = prep.store.length / SR;
+      if (window.RPGate) { window.RPGate.addUsage(totalSec); window.RPGate.ping('transcribe_start'); }
       var processed = 0, failures = 0, successes = 0;
       var t0 = Date.now();
       if (slices.length > 1) {
@@ -1113,6 +1152,128 @@ self.onmessage = async (event) => {
     });
     if (!lines.length) lines = ['1', '00:00:00,000 --> 00:00:01,000', (out.textContent || ''), ''];
     download(baseName() + '-subtitles.srt', lines.join('\n'), 'text/plain;charset=utf-8');
+  });
+})();
+</script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js?onload=rpTurnstileReady&render=explicit" async defer></script>
+<script>
+/* Rankplan gate: soft email wall + soft daily cap + usage pings.
+   Added 2026-11-20. The wall is a lead gate, not hard enforcement:
+   transcription itself still runs entirely in this browser. */
+(function(){
+  'use strict';
+  var WORKER = 'https://transcriber-gate.projects-hf5.workers.dev';
+  var SITEKEY = '0x4AAAAAAGKXqHc5-h-HX0Ki';
+  var CAP_SECONDS = 600; /* 10 audio minutes per day per browser */
+  var overlay = document.getElementById('gateOverlay');
+  var form = document.getElementById('gateForm');
+  var emailInput = document.getElementById('gateEmail');
+  var errEl = document.getElementById('gateErr');
+  var btn = document.getElementById('gateBtn');
+  var msgEl = document.getElementById('gateMsg');
+  var tsId = null;
+
+  function ping(event){
+    try {
+      fetch(WORKER + '/ping', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ event: event }),
+        keepalive: true
+      }).catch(function(){});
+    } catch (e) {}
+  }
+
+  function todayKey(){ return new Date().toISOString().slice(0, 10); }
+  function loadUsage(){
+    try {
+      var u = JSON.parse(localStorage.getItem('rp_cap_v1') || 'null');
+      if (u && u.date === todayKey() && typeof u.seconds === 'number') return u;
+    } catch (e) {}
+    return { date: todayKey(), seconds: 0 };
+  }
+  function saveUsage(u){
+    try { localStorage.setItem('rp_cap_v1', JSON.stringify(u)); } catch (e) {}
+  }
+  function showMsg(text){
+    msgEl.textContent = text;
+    msgEl.classList.add('show');
+    if (msgEl.scrollIntoView) msgEl.scrollIntoView({ block: 'start' });
+  }
+
+  window.rpTurnstileReady = function(){
+    try { tsId = window.turnstile.render('#tsWidget', { sitekey: SITEKEY }); }
+    catch (e) {}
+  };
+
+  window.RPGate = {
+    ping: ping,
+    checkCap: function(durationSec){
+      var u = loadUsage();
+      if (u.seconds >= CAP_SECONDS) {
+        showMsg('You have used the full 10 minutes of transcription for today in this browser. The allowance resets tomorrow. For longer files, talk to Rankplan about the hosted tier.');
+        return false;
+      }
+      if (isFinite(durationSec) && durationSec > 0 && u.seconds + durationSec > CAP_SECONDS) {
+        var left = Math.max(0, Math.floor((CAP_SECONDS - u.seconds) / 60));
+        showMsg('That file would take you past the 10 minute daily allowance in this browser (' + left + ' minutes left today). The allowance resets tomorrow, or talk to Rankplan about the hosted tier for longer files.');
+        return false;
+      }
+      return true;
+    },
+    addUsage: function(sec){
+      if (!isFinite(sec) || sec <= 0) return;
+      var u = loadUsage();
+      u.seconds += sec;
+      saveUsage(u);
+    }
+  };
+
+  var unlocked = false;
+  try { unlocked = !!localStorage.getItem('rp_gate_v1'); } catch (e) {}
+  ping('pageview');
+  if (!unlocked) overlay.hidden = false;
+
+  form.addEventListener('submit', function(e){
+    e.preventDefault();
+    errEl.textContent = '';
+    var email = (emailInput.value || '').trim();
+    if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) {
+      errEl.textContent = 'Please enter a valid email address.';
+      return;
+    }
+    var token = '';
+    if (window.turnstile && tsId !== null) {
+      try { token = window.turnstile.getResponse(tsId) || ''; } catch (e2) {}
+    }
+    if (!token) {
+      errEl.textContent = 'The verification could not be completed here. The check only runs on rankplan.us, so open the tool from rankplan.us if you reached it another way.';
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = 'Checking...';
+    fetch(WORKER + '/gate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ email: email, turnstileToken: token })
+    }).then(function(r){
+      return r.json().then(function(j){ return { status: r.status, j: j }; });
+    }).then(function(res){
+      if (res.status === 200 && res.j && res.j.ok) {
+        try { localStorage.setItem('rp_gate_v1', email); } catch (e3) {}
+        overlay.hidden = true;
+        ping('unlock');
+      } else {
+        errEl.textContent = 'Verification failed. Please try again.';
+        if (window.turnstile && tsId !== null) window.turnstile.reset(tsId);
+      }
+    }).catch(function(){
+      errEl.textContent = 'Could not reach the verification service. Please try again.';
+      if (window.turnstile && tsId !== null) window.turnstile.reset(tsId);
+    }).then(function(){
+      btn.disabled = false;
+      btn.textContent = 'Unlock the transcriber';
+    });
   });
 })();
 </script>

@@ -1165,6 +1165,7 @@ self.onmessage = async (event) => {
   var WORKER = 'https://transcriber-gate.projects-hf5.workers.dev';
   var SITEKEY = '0x4AAAAAAGKXqHc5-h-HX0Ki';
   var CAP_SECONDS = 600; /* 10 audio minutes per day per browser */
+  var ACCESS_HASH = '9798d8ea3a0f2e0c4613f6475fbda24aeed5bc39c2a5d3328dd0dc48459505da'; /* SHA-256 of the access token; the token itself is never in this file */
   var overlay = document.getElementById('gateOverlay');
   var form = document.getElementById('gateForm');
   var emailInput = document.getElementById('gateEmail');
@@ -1209,6 +1210,7 @@ self.onmessage = async (event) => {
   window.RPGate = {
     ping: ping,
     checkCap: function(durationSec){
+      if (hasAccess()) return true;
       var u = loadUsage();
       if (u.seconds >= CAP_SECONDS) {
         showMsg('You have used the full 10 minutes of transcription for today in this browser. The allowance resets tomorrow. For longer files, talk to Rankplan about the hosted tier.');
@@ -1229,10 +1231,42 @@ self.onmessage = async (event) => {
     }
   };
 
+  function hasAccess(){
+    try { return !!localStorage.getItem('rp_access_v1'); } catch (e) { return false; }
+  }
+  function sha256hex(text){
+    if (!window.crypto || !crypto.subtle) return Promise.resolve('');
+    return crypto.subtle.digest('SHA-256', new TextEncoder().encode(text)).then(function(buf){
+      return Array.prototype.map.call(new Uint8Array(buf), function(b){ return ('0' + b.toString(16)).slice(-2); }).join('');
+    });
+  }
+
   var unlocked = false;
   try { unlocked = !!localStorage.getItem('rp_gate_v1'); } catch (e) {}
   ping('pageview');
-  if (!unlocked) overlay.hidden = false;
+  var accessParam = null;
+  try { accessParam = new URLSearchParams(window.location.search).get('access'); } catch (e) {}
+  if (hasAccess()) {
+    overlay.hidden = true;
+  } else if (accessParam) {
+    /* Hold the gate while the token is checked, so a valid link never flashes the wall. */
+    sha256hex(accessParam).then(function(h){
+      if (h && h === ACCESS_HASH) {
+        try { localStorage.setItem('rp_access_v1', '1'); } catch (e) {}
+        overlay.hidden = true;
+        ping('access_unlock');
+        try {
+          var cleanUrl = new URL(window.location.href);
+          cleanUrl.searchParams.delete('access');
+          window.history.replaceState(null, '', cleanUrl.toString());
+        } catch (e) {}
+      } else if (!unlocked) {
+        overlay.hidden = false;
+      }
+    });
+  } else if (!unlocked) {
+    overlay.hidden = false;
+  }
 
   form.addEventListener('submit', function(e){
     e.preventDefault();
